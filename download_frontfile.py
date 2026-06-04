@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Download the latest EPO DOCDB front-file delivery (BDDS product 3).
+"""Download missing EPO DOCDB front-file deliveries (BDDS product 3).
 
 Front-files are weekly incremental updates (create/delete/amend records)
 layered on top of the back-file snapshot. They are small relative to the
-back-file — typically a handful of MB per delivery. This script always
-downloads the *latest* delivery; the EPO download endpoint ignores HTTP
-`Range` requests, so partial-file resume is not possible.
+back-file — typically a handful of MB per delivery. This script lists all
+available deliveries and downloads only files that are missing locally (or
+whose local size does not match the API metadata). The EPO download endpoint
+ignores HTTP `Range` requests, so partial-file resume is not possible.
 
 Credentials must be supplied via environment variables:
 
@@ -23,7 +24,7 @@ import logging
 import sys
 from pathlib import Path
 
-from bdds_client import download_latest_delivery
+from bdds_client import download_all_deliveries
 
 FRONTFILE_PRODUCT_ID = 3
 DEFAULT_OUT_DIR = Path("frontfile")
@@ -47,7 +48,7 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
-    return download_latest_delivery(FRONTFILE_PRODUCT_ID, args.out_dir)
+    return download_all_deliveries(FRONTFILE_PRODUCT_ID, args.out_dir)
 
 
 if __name__ == "__main__":

@@ -28,7 +28,7 @@ DEFAULT_MAP_SIZE = 100 * 1024**3  # 100 GiB; LMDB files are sparse.
 DEFAULT_COMMIT_EVERY = 100_000
 
 DOCS_DB_NAME = b"docs"
-LAYER_1_DB_NAME = b"layer_1"
+ALIAS_DB_NAME = b"alias"
 META_DB_NAME = b"meta"
 META_KEY_BUILD_STATUS = b"build_status"
 META_KEY_LAST_UPDATED = b"last_updated"
@@ -79,7 +79,7 @@ def processed_doc_number(text: str | bytes) -> bytes:
     take the first two characters as the country code, strip leading
     zeros from the remainder, and upper-case the result. The output has
     the same shape as the canonical primary key produced by the
-    back-file extractor, which lets the layer_1 sub-DB chain into
+    back-file extractor, which lets the alias sub-DB chain into
     `docs_db` with no further normalisation.
 
     Returns an empty bytes object when the input has fewer than three
