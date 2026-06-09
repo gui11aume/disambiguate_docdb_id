@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Download missing EPO DOCDB front-file deliveries (BDDS product 3).
+"""Download missing EPO DOCDB frontfile deliveries (BDDS product 3).
 
 Front-files are weekly incremental updates (create/delete/amend records)
-layered on top of the back-file snapshot. They are small relative to the
-back-file — typically a handful of MB per delivery. This script lists all
+layered on top of the backfile snapshot. They are small relative to the
+backfile — typically a handful of MB per delivery. This script lists all
 available deliveries and downloads only files that are missing locally (or
 whose local size does not match the API metadata). The EPO download endpoint
 ignores HTTP `Range` requests, so partial-file resume is not possible.

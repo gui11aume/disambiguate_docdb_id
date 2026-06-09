@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Project the main 6-column TSV down to the alias 2-column input.
+"""Project the main 6-column TSV down to the alias 3-column input.
 
 The main TSV has columns:
 
@@ -15,7 +15,14 @@ identical to what the endpoint will compute at lookup time.
 
 Each surviving row is emitted as ::
 
-    processed(key[:2] + orig_doc_number) \\t key
+    processed(key[:2] + orig_doc_number) \\t key \\t date_publ
+
+The trailing ``date_publ`` (source column 5, or ``99999999`` when the
+source date is empty) is a sort aid, not loader input: stage 3 sorts on
+``(alias, date_publ)`` ascending and keeps the first row per alias, so a
+genuine collision (one alias mapping to several primary keys) resolves
+to the key with the *oldest* publication date. The date column is
+stripped before the row reaches ``initialize_alias_from_tsv.py``.
 
 We skip rows where:
   * `orig_doc_number` is empty or normalises to nothing (no usable
@@ -27,14 +34,13 @@ We skip rows where:
     duplicate-key noise during the bulk load).
 
 The output is intentionally unsorted: the downstream loader requires
-ascending order on column 1, so this script is meant to be piped into
-`LC_ALL=C sort -u` before being fed to `initialize_alias_from_tsv.py`.
-`sort -u` removes lines that are byte-identical (same processed alias
-*and* same primary key), which is the common case when the same row
-appears in more than one back-file XML; genuine collisions — same
-processed alias mapping to *different* primary keys — survive the
-dedup, end up adjacent after sorting, and trip the loader's loud-fail
-path.
+ascending order on column 1, so this script is meant to be sorted on
+``(alias, date_publ)`` and collapsed to one row per alias (oldest date
+wins) before being fed to `initialize_alias_from_tsv.py`. Collapsing to
+one row per alias removes both byte-identical duplicates (the same row
+appearing in more than one backfile XML) and genuine collisions (one
+alias mapping to several primary keys), the latter resolved in favour of
+the oldest publication rather than tripping the loader's loud-fail path.
 
 Usage:
     extract_alias_tsv.py [<sorted.tsv>]            # input defaults to stdin
@@ -192,7 +198,14 @@ def jp_era_padded_synonyms(key: bytes) -> Iterator[bytes]:
         yield b"JP" + yy + padded
 
 
-def _write_alias(out, alias: bytes, key: bytes) -> bool:
+# Publication date for rows whose source ``date_publ`` is empty. It sorts
+# after every real 8-digit date under ``LC_ALL=C``, so when stage 3 breaks
+# ties on the date (oldest wins), a row with a known date always beats a
+# row with a missing one.
+MISSING_DATE = b"99999999"
+
+
+def _write_alias(out, alias: bytes, key: bytes, date_publ: bytes) -> bool:
     """Normalize *alias* and write the alias row. Returns True on success.
 
     Per the lookup contract, every CC except ``JP`` strips leading
@@ -201,18 +214,22 @@ def _write_alias(out, alias: bytes, key: bytes) -> bool:
     zeros at position 2 until the next character is non-zero. The
     alias is dropped if the body collapses below the 3-character
     minimum required by ``ALIAS_RE``.
+
+    The row carries *date_publ* (source column 5) as a third column so
+    stage 3 can use it as a secondary sort key to deterministically pick
+    one primary key per alias; it is stripped before the loader.
     """
     if alias[:2] != b"JP":
         body = alias[2:].lstrip(b"0")
         if len(body) < 3:
             return False
         alias = alias[:2] + body
-    out.write(alias + b"\t" + key + b"\n")
+    out.write(alias + b"\t" + key + b"\t" + (date_publ or MISSING_DATE) + b"\n")
     return True
 
 
 def emit(src, out) -> tuple[int, int, int, int, int, int, int, int]:
-    """Read 6-col TSV rows from *src* and write 2-col alias input to *out*.
+    """Read 6-col TSV rows from *src* and write 3-col alias input to *out*.
 
     Returns `(n_in, n_out, n_zero_stripped, n_wo_two_digit_year,
     n_jp_era, n_jp_era_padded, n_skipped_equal, n_skipped_pattern)` so
@@ -249,27 +266,28 @@ def emit(src, out) -> tuple[int, int, int, int, int, int, int, int]:
 
         key = parts[0]
         orig = parts[2]
+        date_publ = parts[4]
         if len(key) < 2:
             continue
 
         cc = key[:2]
         for synonym in zero_stripped_key_synonyms(key):
-            if _write_alias(out, synonym, key):
+            if _write_alias(out, synonym, key, date_publ):
                 n_out += 1
                 n_zero_stripped += 1
 
         for synonym in wo_two_digit_year_synonyms(key):
-            if _write_alias(out, synonym, key):
+            if _write_alias(out, synonym, key, date_publ):
                 n_out += 1
                 n_wo_two_digit_year += 1
 
         for synonym in jp_era_synonyms(key):
-            if _write_alias(out, synonym, key):
+            if _write_alias(out, synonym, key, date_publ):
                 n_out += 1
                 n_jp_era += 1
 
         for synonym in jp_era_padded_synonyms(key):
-            if _write_alias(out, synonym, key):
+            if _write_alias(out, synonym, key, date_publ):
                 n_out += 1
                 n_jp_era_padded += 1
 
@@ -298,7 +316,7 @@ def emit(src, out) -> tuple[int, int, int, int, int, int, int, int]:
                 if country_alias == key:
                     n_skipped_equal += 1
                     continue
-                if _write_alias(out, country_alias, key):
+                if _write_alias(out, country_alias, key, date_publ):
                     n_out += 1
                 continue
 
@@ -309,7 +327,7 @@ def emit(src, out) -> tuple[int, int, int, int, int, int, int, int]:
             print(f"skipped pattern: {orig!r} {alias!r} ({key!r})", file=sys.stderr)
             continue
 
-        if _write_alias(out, alias, key):
+        if _write_alias(out, alias, key, date_publ):
             n_out += 1
 
     return (

@@ -195,7 +195,7 @@ class BddsClient:
         deliveries = self.get_product(product_id).get("deliveries") or []
         if not deliveries:
             raise BddsError(f"product {product_id} has no deliveries")
-        # Oldest first so incremental front-file updates can be applied in order.
+        # Oldest first so incremental frontfile updates can be applied in order.
         return sorted(deliveries, key=lambda d: d.get("deliveryPublicationDatetime", ""))
 
     def download_file(self, product_id: int, delivery_id: int, file_id: int, dst: Path) -> None:

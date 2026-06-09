@@ -108,11 +108,10 @@ def load_from_tsv(
             key = parts[0]
             if len(key) >= 3 and key[2:3] == b"0" and key[:2] != b"JP":
                 raise ValueError(
-                    f"line {line_no}: key {key!r} has '0' at position 2; "
-                    f"only JP keys are allowed to keep that form"
+                    f"line {line_no}: key {key!r} has '0' at position 2; only JP keys are allowed to keep that form"
                 )
             docdb_id = parts[1].decode("utf-8")
-            # parts[2] is the original_doc_number alias from the back-file
+            # parts[2] is the original_doc_number alias from the backfile
             # extractor. Intentionally ignored: only the canonical docdb_id
             # is stored in the LMDB record.
             inventor = parts[3].decode("utf-8")

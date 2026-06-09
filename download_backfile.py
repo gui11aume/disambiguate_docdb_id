@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Download the latest EPO DOCDB back-file delivery (BDDS product 14).
+"""Download the latest EPO DOCDB backfile delivery (BDDS product 14).
 
-The back-file is the full bibliographic snapshot of all DOCDB documents,
+The backfile is the full bibliographic snapshot of all DOCDB documents,
 delivered as multi-GB zipped XML files. This script always downloads the
 *latest* delivery from scratch — the EPO download endpoint ignores HTTP
 `Range` requests, so partial-file resume is not possible.
