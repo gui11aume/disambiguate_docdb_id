@@ -1,42 +1,34 @@
-#!/usr/bin/env python3
-"""Load a sorted TSV stream into LMDB.
+"""Load a sorted backfile TSV stream into the LMDB `docs` sub-DB.
 
-Reads from stdin (or a file passed as the second argument).  The input must
-already be sorted by the first column with LC_ALL=C, which is exactly what
-GNU sort produces.  Each line has six tab-separated columns:
+The input must already be sorted by the first column with `LC_ALL=C` (which is
+exactly what GNU sort produces). Each line has six tab-separated columns:
 
-    key \\t docdb_id \\t original_doc_number \\t first_inventor_name \\t publication_date \\t family_id
+    key \t docdb_id \t original_doc_number \t first_inventor_name \t publication_date \t family_id
 
-The `original_doc_number` column (3rd) is present in the TSV but is not
-stored in the LMDB record; it is read and discarded. Tab/newline/CR in the
-inventor field are replaced with a space at extraction time; all other
-fields are plain ASCII. No backslash-unescaping is needed.
-
-Usage:
-    # Typical pipeline:
-    sort -t $'\\t' -k1,1 ... stage/raw.tsv | uv run python load_lmdb_from_tsv.py out/docdb.lmdb
-
-    # Or read from a pre-sorted file:
-    uv run python load_lmdb_from_tsv.py out/docdb.lmdb stage/sorted.tsv
+The `original_doc_number` column (3rd) is present in the TSV but is not stored
+in the LMDB record; it is read and discarded (the alias pipeline consumes it
+separately). Tab/newline/CR in the inventor field are replaced with a space at
+extraction time; all other fields are plain ASCII.
 """
 
 from __future__ import annotations
 
+import shutil
 import sys
 from pathlib import Path
 
 import lmdb
 import msgpack
 
-from helpers import (
+from docdb_id.store.schema import (
     BUILD_STATUS_COMPLETE,
     BUILD_STATUS_IN_PROGRESS,
     DEFAULT_COMMIT_EVERY,
     DEFAULT_MAP_SIZE,
     DOCS_DB_NAME,
     META_DB_NAME,
-    META_KEY_BUILD_STATUS,
-    META_KEY_LAST_UPDATED,
+    META_KEY_CORE_BUILD_STATUS,
+    META_KEY_CORE_LAST_UPDATED,
     now_iso,
 )
 
@@ -53,8 +45,6 @@ def load_from_tsv(
     Returns (n_docs, n_keys).
     """
     if lmdb_path.exists():
-        import shutil
-
         if lmdb_path.is_dir():
             shutil.rmtree(lmdb_path)
         else:
@@ -79,8 +69,8 @@ def load_from_tsv(
     meta_db = env.open_db(META_DB_NAME)
 
     with env.begin(write=True) as txn:
-        txn.put(META_KEY_BUILD_STATUS, BUILD_STATUS_IN_PROGRESS, db=meta_db)
-        txn.put(META_KEY_LAST_UPDATED, now_iso().encode(), db=meta_db)
+        txn.put(META_KEY_CORE_BUILD_STATUS, BUILD_STATUS_IN_PROGRESS, db=meta_db)
+        txn.put(META_KEY_CORE_LAST_UPDATED, now_iso().encode(), db=meta_db)
 
     n_keys = 0
     n_docs = 0
@@ -112,8 +102,8 @@ def load_from_tsv(
                 )
             docdb_id = parts[1].decode("utf-8")
             # parts[2] is the original_doc_number alias from the backfile
-            # extractor. Intentionally ignored: only the canonical docdb_id
-            # is stored in the LMDB record.
+            # extractor. Intentionally ignored: only the canonical docdb_id is
+            # stored in the LMDB record.
             inventor = parts[3].decode("utf-8")
             date_publ = parts[4].decode("utf-8")
             family_id = parts[5].decode("utf-8")
@@ -126,7 +116,7 @@ def load_from_tsv(
                         txn.commit()
                         txn = env.begin(write=True)
                         cursor = txn.cursor(db=docs_db)
-                        print(f"\r{n_keys:,} keys, {n_docs:,} docs…", end="", file=sys.stderr)
+                        print(f"\r{n_keys:,} keys, {n_docs:,} docs...", end="", file=sys.stderr)
                 current_key = key
                 current_records = []
                 current_ids = set()
@@ -146,8 +136,8 @@ def load_from_tsv(
         raise
 
     with env.begin(write=True) as txn:
-        txn.put(META_KEY_BUILD_STATUS, BUILD_STATUS_COMPLETE, db=meta_db)
-        txn.put(META_KEY_LAST_UPDATED, now_iso().encode(), db=meta_db)
+        txn.put(META_KEY_CORE_BUILD_STATUS, BUILD_STATUS_COMPLETE, db=meta_db)
+        txn.put(META_KEY_CORE_LAST_UPDATED, now_iso().encode(), db=meta_db)
 
     env.sync(True)
 
@@ -156,25 +146,3 @@ def load_from_tsv(
 
     env.close()
     return n_docs, n_keys
-
-
-def main() -> int:
-    if len(sys.argv) < 2:
-        print("usage: load_lmdb_from_tsv.py <lmdb-path> [<sorted-tsv>]", file=sys.stderr)
-        return 1
-
-    lmdb_path = Path(sys.argv[1])
-    src_path = Path(sys.argv[2]) if len(sys.argv) > 2 else None
-
-    if src_path is not None:
-        with src_path.open("rb") as fh:
-            n_docs, n_keys = load_from_tsv(fh, lmdb_path)
-    else:
-        n_docs, n_keys = load_from_tsv(sys.stdin.buffer, lmdb_path)
-
-    print(f"\n{n_keys:,} unique keys, {n_docs:,} documents → {lmdb_path}", file=sys.stderr)
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())

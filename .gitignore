@@ -216,4 +216,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
-.aider*
+
+# docdb_id build artifacts
+#   STAGE scratch dir: downloads, expansion work dirs, and intermediate TSVs.
+stage/

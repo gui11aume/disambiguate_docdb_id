@@ -1,58 +1,65 @@
-#!/usr/bin/env python3
 """Apply a sorted frontfile changelog TSV to an existing LMDB.
 
 This is the only step in the frontfile path that mutates the database; the
-extraction (`frontfile_to_tsv.py`) and the global ordering (`sort`) produce a
-plain TSV with no LMDB access, keeping parsing and storage cleanly separated.
+extraction and the global ordering (`sort`) produce a plain TSV with no LMDB
+access, keeping parsing and storage cleanly separated.
 
-Input is the changelog produced by `frontfile_to_tsv.py`, already sorted with
-`LC_ALL=C sort -t$'\\t' -k1,1 -k2,2` so that rows are grouped by key and, within
-each key, ordered chronologically by the `seq` token. Each line has eight
-tab-separated columns:
+Input is the changelog produced by `docdb_id.parse.docdb_target.FrontfileTarget`,
+already sorted with `LC_ALL=C sort -t$'\t' -k1,1 -k2,2` so that rows are
+grouped by key and, within each key, ordered chronologically by the `seq`
+token. Each line has eight tab-separated columns:
 
-    key \\t seq \\t op \\t docdb_id \\t orig_doc_number \\t inventor \\t date_publ \\t family_id
+    key \t seq \t op \t docdb_id \t orig_doc_number \t inventor \t date_publ \t family_id
 
 For every key we read the existing record list once, replay that key's
 operations in order, and write the result back:
 
-* "A" (amend) / "C" (create): upsert — replace the entry whose `docdb_id`
+* "A" (amend) / "C" (create): upsert - replace the entry whose `docdb_id`
   matches, otherwise append. Because operations are replayed in `seq` order, a
   later amend overwrites an earlier one.
 * "D" (delete): remove the entry whose `docdb_id` matches. When the list
   becomes empty the LMDB key itself is deleted.
 
-The `orig_doc_number` column is carried for parity with the backfile TSV (alias
-tooling) but is not stored in the docs record, matching `initialize_core_from_tsv.py`.
+The `alias` sub-DB is updated in the same write transaction as `docs`:
 
-The target LMDB must already be in the `complete` state (left by
-`initialize_core_from_tsv.py` or a previous successful apply). While the update
-runs, `build_status` is flipped to `in_progress` and only set back to `complete`
-after the final commit, so a mid-run crash leaves a database that readers
-recognize as incomplete.
+* "C" / "A": add every alias derived from `(key, orig_doc_number)` via the
+  shared `docdb_id.alias.extract` helpers. On collision the existing mapping is
+  kept (assumed older).
+* "D": remove orig-derived aliases that still map to this key. Key-derived
+  synonyms are removed only when the key is fully deleted from `docs`.
 
-Usage:
-    apply_frontfile_to_lmdb.py <lmdb-path> [<sorted-changelog.tsv>]   # else stdin
+The target LMDB core build must already be in the `complete` state. While the
+update runs, `core_build_status` is flipped to `in_progress` and only set back
+to `complete` after the final commit, so a mid-run crash leaves a database that
+readers recognize as incomplete. When the caller provides frontfile part stems,
+they are written to the `meta` sub-DB in the same terminal transaction that
+restores the `complete` state, so a partial update is never recorded as
+incorporated.
 """
 
 from __future__ import annotations
 
-import argparse
 import logging
-import sys
 from pathlib import Path
 
 import lmdb
 import msgpack
 
-from helpers import (
+from docdb_id.alias.extract import key_synonyms, orig_aliases
+from docdb_id.store.alias import add_alias, remove_alias
+from docdb_id.store.schema import (
+    ALIAS_DB_NAME,
     BUILD_STATUS_COMPLETE,
     BUILD_STATUS_IN_PROGRESS,
     DEFAULT_COMMIT_EVERY,
     DEFAULT_MAP_SIZE,
     DOCS_DB_NAME,
+    FRONTFILE_APPLIED_PREFIX,
     META_DB_NAME,
-    META_KEY_BUILD_STATUS,
-    META_KEY_LAST_UPDATED,
+    META_KEY_ALIAS_LAST_UPDATED,
+    META_KEY_CORE_BUILD_STATUS,
+    META_KEY_CORE_LAST_UPDATED,
+    META_KEY_FRONTFILE_LAST_APPLIED,
     STATUS_AMEND,
     STATUS_CREATE,
     STATUS_DELETE,
@@ -60,7 +67,7 @@ from helpers import (
     now_iso,
 )
 
-logger = logging.getLogger("apply_frontfile_to_lmdb")
+logger = logging.getLogger("docdb_id.store.apply_frontfile")
 
 
 def upsert_record(existing: list[Record], record: Record) -> list[Record]:
@@ -101,6 +108,7 @@ def apply_changelog(
     src,
     lmdb_path: Path,
     *,
+    applied_parts: list[str] | None = None,
     map_size: int = DEFAULT_MAP_SIZE,
     commit_every: int = DEFAULT_COMMIT_EVERY,
 ) -> ApplyStats:
@@ -118,28 +126,29 @@ def apply_changelog(
         map_async=True,
         sync=False,
         lock=True,
-        max_dbs=2,
+        max_dbs=3,
     )
     docs_db = env.open_db(DOCS_DB_NAME)
+    alias_db = env.open_db(ALIAS_DB_NAME)
     meta_db = env.open_db(META_DB_NAME)
 
     stats = ApplyStats()
     try:
-        # Refuse to update a database that is not in the `complete` state:
-        # either the core build was interrupted, or a previous apply crashed
-        # mid-run. The safe thing is to rebuild from a backfile.
+        # Refuse to update a database that is not in the `complete` state: either
+        # the core build was interrupted, or a previous apply crashed mid-run.
+        # The safe thing is to rebuild from a backfile.
         with env.begin(write=False) as ro_txn:
-            existing_status = ro_txn.get(META_KEY_BUILD_STATUS, db=meta_db)
+            existing_status = ro_txn.get(META_KEY_CORE_BUILD_STATUS, db=meta_db)
         if existing_status != BUILD_STATUS_COMPLETE:
             raise RuntimeError(
-                f"refusing to update LMDB at {lmdb_path}: build_status is "
+                f"refusing to update LMDB at {lmdb_path}: core_build_status is "
                 f"{existing_status!r}, expected {BUILD_STATUS_COMPLETE!r}. "
                 "Rebuild from a backfile."
             )
 
         with env.begin(write=True) as marker_txn:
-            marker_txn.put(META_KEY_BUILD_STATUS, BUILD_STATUS_IN_PROGRESS, db=meta_db)
-            marker_txn.put(META_KEY_LAST_UPDATED, now_iso().encode("utf-8"), db=meta_db)
+            marker_txn.put(META_KEY_CORE_BUILD_STATUS, BUILD_STATUS_IN_PROGRESS, db=meta_db)
+            marker_txn.put(META_KEY_CORE_LAST_UPDATED, now_iso().encode("utf-8"), db=meta_db)
 
         txn = env.begin(write=True)
 
@@ -151,6 +160,8 @@ def apply_changelog(
                 # `delete` returns False when the key was absent (e.g. a delete
                 # for a kind that never existed); only count real removals.
                 stats.key_deletions += 1
+                for alias in key_synonyms(key_bytes):
+                    remove_alias(txn, alias_db, alias, key_bytes)
 
         try:
             current_key: bytes | None = None
@@ -172,7 +183,7 @@ def apply_changelog(
                 key = parts[0]
                 op = parts[2].decode("utf-8")
                 docdb_id = parts[3].decode("utf-8")
-                # parts[4] is orig_doc_number — carried for alias parity, not stored.
+                orig = parts[4]
                 inventor = parts[5].decode("utf-8")
                 date_publ = parts[6].decode("utf-8")
                 family_id = parts[7].decode("utf-8")
@@ -192,12 +203,18 @@ def apply_changelog(
 
                 if op in (STATUS_AMEND, STATUS_CREATE):
                     working = upsert_record(working, [docdb_id, inventor, date_publ, family_id])
+                    for alias in key_synonyms(key):
+                        add_alias(txn, alias_db, docs_db, alias, key)
+                    for alias in orig_aliases(key, orig).aliases:
+                        add_alias(txn, alias_db, docs_db, alias, key)
                     if op == STATUS_AMEND:
                         stats.amended += 1
                     else:
                         stats.created += 1
                 elif op == STATUS_DELETE:
                     working = remove_record(working, docdb_id)
+                    for alias in orig_aliases(key, orig).aliases:
+                        remove_alias(txn, alias_db, alias, key)
                     stats.deleted += 1
                 else:
                     logger.warning(f"unknown op {op!r} on line {line_no} for {docdb_id}; skipping")
@@ -213,68 +230,16 @@ def apply_changelog(
             raise
 
         with env.begin(write=True) as marker_txn:
-            marker_txn.put(META_KEY_BUILD_STATUS, BUILD_STATUS_COMPLETE, db=meta_db)
-            marker_txn.put(META_KEY_LAST_UPDATED, now_iso().encode("utf-8"), db=meta_db)
+            applied_at = now_iso().encode("utf-8")
+            for part in sorted(set(applied_parts or [])):
+                marker_txn.put(FRONTFILE_APPLIED_PREFIX + part.encode("utf-8"), applied_at, db=meta_db)
+            if applied_parts:
+                marker_txn.put(META_KEY_FRONTFILE_LAST_APPLIED, applied_at, db=meta_db)
+            marker_txn.put(META_KEY_CORE_BUILD_STATUS, BUILD_STATUS_COMPLETE, db=meta_db)
+            marker_txn.put(META_KEY_CORE_LAST_UPDATED, applied_at, db=meta_db)
+            marker_txn.put(META_KEY_ALIAS_LAST_UPDATED, applied_at, db=meta_db)
 
         env.sync(True)
     finally:
         env.close()
     return stats
-
-
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description=__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    parser.add_argument(
-        "lmdb",
-        type=Path,
-        help="Path of the existing LMDB environment to update in place.",
-    )
-    parser.add_argument(
-        "changelog",
-        type=Path,
-        nargs="?",
-        help="Sorted changelog TSV from frontfile_to_tsv.py. Reads stdin if omitted.",
-    )
-    parser.add_argument(
-        "--map-size",
-        type=int,
-        default=DEFAULT_MAP_SIZE,
-        help=f"LMDB map_size in bytes (default: {DEFAULT_MAP_SIZE}). Files are sparse, this is only an upper bound.",
-    )
-    parser.add_argument(
-        "--commit-every",
-        type=int,
-        default=DEFAULT_COMMIT_EVERY,
-        help=f"Commit and reopen the write transaction every N keys (default: {DEFAULT_COMMIT_EVERY}).",
-    )
-    parser.add_argument("--log-level", default="INFO", help="Logging level (default: INFO).")
-    return parser.parse_args(argv)
-
-
-def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv)
-    logging.basicConfig(
-        level=args.log_level.upper(),
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
-
-    if args.changelog is not None:
-        with args.changelog.open("rb") as fh:
-            stats = apply_changelog(fh, args.lmdb, map_size=args.map_size, commit_every=args.commit_every)
-    else:
-        stats = apply_changelog(sys.stdin.buffer, args.lmdb, map_size=args.map_size, commit_every=args.commit_every)
-
-    logger.info(
-        f"applied {stats.total_applied} operation(s) to {args.lmdb} across "
-        f"{stats.keys_touched} key(s): {stats.created} created, {stats.amended} amended, "
-        f"{stats.deleted} deleted ({stats.key_deletions} key(s) removed), "
-        f"{stats.skipped} skipped"
-    )
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
