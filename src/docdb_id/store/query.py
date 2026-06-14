@@ -74,6 +74,7 @@ def run_query(lmdb_path: Path, src: IO[str], out: IO[str]) -> None:
                 key = normalize(right).encode()
                 if not key:
                     continue
+                breakpoint()
                 blob = txn.get(key, db=docs_db)
                 if blob is None and alias_db is not None:
                     primary = txn.get(key, db=alias_db)
