@@ -26,10 +26,12 @@ On either failure the loader aborts the transaction and raises `_Collision`.
 
 from __future__ import annotations
 
-import sys
+import logging
 from pathlib import Path
 
 import lmdb
+
+logger = logging.getLogger("docdb_id.store.alias")
 
 from docdb_id.store.schema import (
     ALIAS_DB_NAME,
@@ -167,12 +169,13 @@ def load_alias(
 
             _put_or_die(txn, cursor, alias_db, alias, primary_key, line_no, last_alias)
             last_alias = alias
+            n += 1
 
             if n % commit_every == 0:
                 txn.commit()
                 txn = env.begin(write=True)
                 cursor = txn.cursor(db=alias_db)
-                print(f"\ralias: {n:,} aliases...", end="", file=sys.stderr)
+                logger.info("alias: %s aliases...", f"{n:,}")
 
         txn.commit()
     except BaseException:
@@ -254,7 +257,7 @@ def prune_orphan_aliases(
                 if i % commit_every == 0:
                     txn.commit()
                     txn = env.begin(write=True)
-                    print(f"\ralias prune: {i:,}/{len(orphans):,} removed...", end="", file=sys.stderr)
+                    logger.info("alias prune: %s/%s removed...", f"{i:,}", f"{len(orphans):,}")
             txn.commit()
         except BaseException:
             txn.abort()
