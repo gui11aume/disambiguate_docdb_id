@@ -46,6 +46,55 @@ def normalize(candidate: str) -> str:
     return cc + (num.lstrip("0") or "0")
 
 
+def _fetch_blob(
+    txn: lmdb.Transaction,
+    docs_db: object,
+    alias_db: object | None,
+    key: bytes,
+) -> bytes | None:
+    """Run the two-tier + padding probes and return the raw msgpack blob or None."""
+    blob = txn.get(key, db=docs_db)
+    if blob is None and alias_db is not None:
+        primary = txn.get(key, db=alias_db)
+        if primary is not None:
+            blob = txn.get(primary, db=docs_db)
+    if blob is None and len(key) == 13 and key[6:7] == b"0":
+        blob = txn.get(key[:6] + key[7:], db=docs_db)
+    if blob is None and len(key) == 11:
+        blob = txn.get(key[:6] + b"0" + key[6:], db=docs_db)
+    return blob
+
+
+def lookup_one(
+    txn: lmdb.Transaction,
+    docs_db: object,
+    alias_db: object | None,
+    cc: str,
+    number: str,
+) -> list[dict]:
+    """Resolve a single (cc, number) pair against an open LMDB transaction.
+
+    Args:
+        txn: Open read transaction.
+        docs_db: Handle for the docs sub-DB.
+        alias_db: Handle for the alias sub-DB, or None if not present.
+        cc: Two-letter country code, e.g. "US".
+        number: Doc number without kind code, e.g. "20130143024".
+
+    Returns:
+        List of record dicts with keys docdb_id, inventor, date_publ, family_id.
+        Empty list when no match is found.
+    """
+    key = (cc.upper() + number.lstrip("0")).encode()
+    blob = _fetch_blob(txn, docs_db, alias_db, key)
+    if blob is None:
+        return []
+    return [
+        {"docdb_id": r[0], "inventor": r[1], "date_publ": r[2], "family_id": r[3]}
+        for r in msgpack.unpackb(blob, raw=False)
+    ]
+
+
 def run_query(lmdb_path: Path, src: IO[str], out: IO[str]) -> None:
     """Resolve each input line against the LMDB and write JSON record lists to *out*."""
     env = lmdb.open(
@@ -76,15 +125,7 @@ def run_query(lmdb_path: Path, src: IO[str], out: IO[str]) -> None:
                 key = normalize(right).encode()
                 if not key:
                     continue
-                blob = txn.get(key, db=docs_db)
-                if blob is None and alias_db is not None:
-                    primary = txn.get(key, db=alias_db)
-                    if primary is not None:
-                        blob = txn.get(primary, db=docs_db)
-                if blob is None and len(key) == 13 and key[6:7] == b"0":
-                    blob = txn.get(key[:6] + key[7:], db=docs_db)
-                if blob is None and len(key) == 11:
-                    blob = txn.get(key[:6] + b"0" + key[6:], db=docs_db)
+                blob = _fetch_blob(txn, docs_db, alias_db, key)
                 records = msgpack.unpackb(blob, raw=False) if blob is not None else []
                 print(f"{left}\t{right}\t{json.dumps(records, ensure_ascii=False)}", file=out)
     finally:

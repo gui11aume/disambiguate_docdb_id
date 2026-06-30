@@ -17,3 +17,14 @@ Key routing rules:
 - Save progress → invoke /context-save
 - Resume context → invoke /context-restore
 - Author a backlog-ready spec/issue → invoke /spec
+
+## Python style
+
+- Do not use print for errors, use logging instead.
+- Prefer f-strings for string interpolation.
+- Use single ` quotes for variables and functions in comments.
+- Use the Google format for comments and docstrings.
+
+## Environment
+
+- Use `uv run...` for all python commands.
