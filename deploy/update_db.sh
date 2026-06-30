@@ -16,7 +16,7 @@ NEW_ARCHIVE="$SERVE_DIR/docdb-$TIMESTAMP.tar.gz"
 KEEP_ARCHIVES=1
 
 echo "[update_db] applying frontfile to $LMDB_PATH..."
-docdb-apply-frontfile --lmdb "$LMDB_PATH"
+docker compose -f /opt/docdb/docker-compose.yml exec -T api docdb-apply-frontfile --lmdb /data/docdb.lmdb
 echo "[update_db] frontfile applied"
 
 echo "[update_db] streaming backup → $NEW_ARCHIVE..."
