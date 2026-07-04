@@ -67,6 +67,8 @@ def _parse_backfile_xml(job: tuple[str, str]) -> str | None:
                     break
                 parser.feed(chunk)
         rows = parser.close()
+        if not rows:
+            logger.warning("parse_backfile_xml: %s produced 0 rows (lxml recover may have eaten errors)", xml_path.name)
         with tmp_path.open("wb") as out:
             for row in rows:
                 out.write(row)
@@ -101,6 +103,8 @@ def _parse_frontfile_part(job: tuple[list[str], str, int]) -> str | None:
                         break
                     parser.feed(chunk)
             parser.close()
+        if not target.rows:
+            logger.warning("parse_frontfile_part: %s produced 0 rows (lxml recover may have eaten errors)", part_path.name)
         with tmp_path.open("wb") as out:
             for row in target.rows:
                 out.write(row)

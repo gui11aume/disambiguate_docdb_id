@@ -76,23 +76,31 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     applied_parts = [part_stem(path) for path in args.part_tsvs]
-    if args.changelog is not None:
-        with args.changelog.open("rb") as fh:
+    try:
+        if args.changelog is not None:
+            with args.changelog.open("rb") as fh:
+                stats = apply_changelog(
+                    fh,
+                    args.lmdb,
+                    applied_parts=applied_parts,
+                    map_size=args.map_size,
+                    commit_every=args.commit_every,
+                )
+        else:
             stats = apply_changelog(
-                fh,
+                sys.stdin.buffer,
                 args.lmdb,
                 applied_parts=applied_parts,
                 map_size=args.map_size,
                 commit_every=args.commit_every,
             )
-    else:
-        stats = apply_changelog(
-            sys.stdin.buffer,
-            args.lmdb,
-            applied_parts=applied_parts,
-            map_size=args.map_size,
-            commit_every=args.commit_every,
+    except RuntimeError as exc:
+        logger.error("%s", exc)
+        logger.error(
+            "To recover: rebuild the LMDB from the backfile using docdb_id.cli.backfile, "
+            "then re-apply any frontfile parts."
         )
+        return 1
 
     logger.info(
         f"applied {stats.total_applied} operation(s) to {args.lmdb} across "

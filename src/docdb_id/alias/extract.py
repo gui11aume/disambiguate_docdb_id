@@ -30,9 +30,11 @@ We skip rows where:
 
 from __future__ import annotations
 
+import logging
 import re
-import sys
 from collections.abc import Iterator
+
+logger = logging.getLogger("docdb_id.alias.extract")
 from dataclasses import dataclass
 from datetime import date
 
@@ -229,7 +231,7 @@ def orig_aliases(key: bytes, orig: bytes) -> OrigAliasBatch:
         return OrigAliasBatch(())
 
     cc = key[:2]
-    if key.endswith(orig.lstrip(b"0")):
+    if cc + orig.lstrip(b"0") == key:
         return OrigAliasBatch((), skipped_equal=True)
 
     alias = processed_doc_number(orig)
@@ -255,7 +257,7 @@ def orig_aliases(key: bytes, orig: bytes) -> OrigAliasBatch:
     if JUST_NUMBERS_RE.fullmatch(alias) and len(alias) > 3:
         alias = cc + alias
     if not ALIAS_RE.fullmatch(alias):
-        print(f"skipped pattern: {orig!r} {alias!r} ({key!r})", file=sys.stderr)
+        logger.debug("skipped pattern: %r %r (%r)", orig, alias, key)
         return OrigAliasBatch((), skipped_pattern=True)
 
     normalized = _normalize_alias(alias)
@@ -297,7 +299,7 @@ def emit(src, out) -> tuple[int, int, int, int, int, int, int, int]:
         line = raw.rstrip(b"\n") if isinstance(raw, bytes) else raw.rstrip("\n").encode()
         parts = line.split(b"\t", 5)
         if len(parts) != 6:
-            print(f"warning: malformed line {n_in}: {line[:80]!r}", file=sys.stderr)
+            logger.warning("malformed line %d: %r", n_in, line[:80])
             continue
 
         key = parts[0]

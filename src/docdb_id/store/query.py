@@ -59,9 +59,11 @@ def run_query(lmdb_path: Path, src: IO[str], out: IO[str]) -> None:
     docs_db = env.open_db(DOCS_DB_NAME)
     # Older LMDB envs built before the alias stage existed will not have this
     # sub-DB; treat that as "no aliases known" rather than a fatal error.
+    # ReadonlyError is raised (not NotFoundError) when opening a non-existent
+    # named DB in a readonly environment, because registering it requires a write txn.
     try:
         alias_db = env.open_db(ALIAS_DB_NAME)
-    except lmdb.NotFoundError:
+    except (lmdb.NotFoundError, lmdb.ReadonlyError):
         alias_db = None
 
     try:
@@ -74,7 +76,6 @@ def run_query(lmdb_path: Path, src: IO[str], out: IO[str]) -> None:
                 key = normalize(right).encode()
                 if not key:
                     continue
-                breakpoint()
                 blob = txn.get(key, db=docs_db)
                 if blob is None and alias_db is not None:
                     primary = txn.get(key, db=alias_db)

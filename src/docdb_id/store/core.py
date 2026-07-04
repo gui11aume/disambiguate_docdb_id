@@ -13,9 +13,11 @@ extraction time; all other fields are plain ASCII.
 
 from __future__ import annotations
 
+import logging
 import shutil
-import sys
 from pathlib import Path
+
+logger = logging.getLogger("docdb_id.store.core")
 
 import lmdb
 import msgpack
@@ -92,7 +94,7 @@ def load_from_tsv(
                 line = line.encode("utf-8")
             parts = line.split(b"\t", 5)
             if len(parts) != 6:
-                print(f"warning: malformed line {line_no}: {line[:80]!r}", file=sys.stderr)
+                logger.warning("malformed line %d: %r", line_no, line[:80])
                 continue
 
             key = parts[0]
@@ -116,7 +118,7 @@ def load_from_tsv(
                         txn.commit()
                         txn = env.begin(write=True)
                         cursor = txn.cursor(db=docs_db)
-                        print(f"\r{n_keys:,} keys, {n_docs:,} docs...", end="", file=sys.stderr)
+                        logger.info("%s keys, %s docs...", f"{n_keys:,}", f"{n_docs:,}")
                 current_key = key
                 current_records = []
                 current_ids = set()

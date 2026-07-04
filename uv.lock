@@ -19,9 +19,13 @@ dependencies = [
     { name = "lmdb" },
     { name = "lxml" },
     { name = "msgpack" },
+    { name = "tqdm" },
+]
+
+[package.optional-dependencies]
+dev = [
     { name = "pytest" },
     { name = "ruff" },
-    { name = "tqdm" },
 ]
 
 [package.metadata]
@@ -29,10 +33,11 @@ requires-dist = [
     { name = "lmdb", specifier = ">=2.2.0" },
     { name = "lxml", specifier = ">=6.1.1" },
     { name = "msgpack", specifier = ">=1.1.0,<2" },
-    { name = "pytest", specifier = ">=9.0.0" },
-    { name = "ruff", specifier = "==0.15.2" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.0.0" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = "==0.15.2" },
     { name = "tqdm", specifier = ">=4.67.1,<5" },
 ]
+provides-extras = ["dev"]
 
 [[package]]
 name = "exceptiongroup"
