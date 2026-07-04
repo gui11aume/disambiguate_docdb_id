@@ -17,7 +17,7 @@ mcp = FastMCP("DOCDB Disambiguator")
 
 
 @mcp.tool()
-def query_patent(cc: str, number: str) -> list[dict]:
+def resolve_docdb_id(cc: str, number: str) -> list[dict]:
     """Resolve a patent publication number to its canonical DOCDB record(s).
 
     IMPORTANT — strip the kind code before calling:

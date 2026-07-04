@@ -44,7 +44,7 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "query_patent",
+            "name": "resolve_docdb_id",
             "description": (
                 "Resolve a patent publication number to its canonical DOCDB record(s).\n"
                 "\n"
@@ -102,7 +102,7 @@ TOOLS = [
 ]
 
 
-def _call_query_patent(cc: str, number: str) -> list[dict]:
+def _call_resolve_docdb_id(cc: str, number: str) -> list[dict]:
     url = f"{DOCDB_API_URL.rstrip('/')}/query"
     resp = httpx.get(url, params={"cc": cc, "number": number}, timeout=10.0)
     resp.raise_for_status()
@@ -111,8 +111,8 @@ def _call_query_patent(cc: str, number: str) -> list[dict]:
 
 def _dispatch_tool(name: str, arguments: str) -> str:
     args = json.loads(arguments)
-    if name == "query_patent":
-        result = _call_query_patent(args["cc"], args["number"])
+    if name == "resolve_docdb_id":
+        result = _call_resolve_docdb_id(args["cc"], args["number"])
         return json.dumps(result)
     raise ValueError(f"unknown tool: {name}")
 

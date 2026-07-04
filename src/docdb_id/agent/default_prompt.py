@@ -11,12 +11,12 @@ A patent reference can appear in many forms:
 
 The same document is often referred to multiple times in different ways. \
 For example, a document may first appear as "US 8,000,000 (Greenberg)" and \
-later as just "Greenberg" or "Greenberg et al." Call query_patent once for \
+later as just "Greenberg" or "Greenberg et al." Call resolve_docdb_id once for \
 the first full reference, then reuse the same docdb_id for subsequent \
 references if you are confident they refer to the same document.
 
 For each reference you find:
-  1. Call query_patent to look it up (strip the kind code and formatting first).
+  1. Call resolve_docdb_id to look it up (strip the kind code and formatting first).
   2. Use the returned inventor name and publication date to confirm the match \
 against any contextual clues in the source (author name, year, etc.).
   3. Replace the reference in the text with the canonical docdb_id from the \
