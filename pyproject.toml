@@ -6,7 +6,6 @@ build-backend = "hatchling.build"
 name = "disambiguate-docdb-id"
 version = "0.1.0"
 description = "A simple endpoint to disambiguate DOCDB identifiers"
-readme = "README.md"
 requires-python = ">=3.10"
 authors = [
     {name = "Guillaume Filion", email = "guillaume.filion@gmail.com"}
