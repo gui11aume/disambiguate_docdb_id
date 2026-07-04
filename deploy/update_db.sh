@@ -30,3 +30,4 @@ find "$SERVE_DIR" -maxdepth 1 -name "docdb-*.tar.gz" \
 echo "[update_db] old archives pruned (kept $KEEP_ARCHIVES)"
 
 echo "[update_db] done"
+curl -fsS "$HEALTHCHECKS_URL" > /dev/null
