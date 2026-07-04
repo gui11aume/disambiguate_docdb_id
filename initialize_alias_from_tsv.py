@@ -6,9 +6,12 @@ Input columns:
     processed(orig_doc_number) \\t key
 
 The input must be sorted ascending on column 1 with ``LC_ALL=C`` (which
-is what GNU ``sort`` produces by default). Identical lines must already
-be deduplicated upstream — pipe through ``sort -u`` between
-``extract_alias_tsv.py`` and this loader.
+is what GNU ``sort`` produces by default) and contain exactly one row
+per alias. Upstream (see the Makefile's stage 3) ``extract_alias_tsv.py``
+emits a third ``date_publ`` column, the stream is sorted on
+``(alias, date_publ)``, collapsed to the first row per alias (oldest
+publication wins on a collision), and the date column is stripped before
+it reaches this loader.
 
 Two correctness invariants are enforced via LMDB primitives instead of
 defensive Python code:
@@ -17,19 +20,21 @@ defensive Python code:
   arrives that is not strictly greater than the previous one. That
   catches mis-sorted input loudly on the first offending row.
 * ``overwrite=False`` makes the put fail with ``MDB_KEYEXIST`` if the
-  key already exists. Combined with the dedup pass upstream, this
-  surfaces only *real* collisions: the same processed alias pointing
-  to two different primary keys, which is bad data we want to know
-  about.
+  key already exists. Since the upstream collapse keeps exactly one row
+  per alias, a duplicate key here means the collapse pass was skipped or
+  produced mis-ordered output, so the loader still loud-fails on it.
 
 On either failure the loader aborts the transaction and exits non-zero
 after printing both the offending row and the existing mapping (if any),
 so the operator can fix the upstream data.
 
 Usage:
-    # Typical pipeline:
-    extract_alias_tsv.py stage/sorted.tsv | LC_ALL=C sort -u | \\
-        initialize_alias_from_tsv.py out/docdb.lmdb
+    # Typical pipeline (date used only to break collisions, then dropped):
+    extract_alias_tsv.py stage/sorted.tsv \\
+        | LC_ALL=C sort -t$'\\t' -k1,1 -k3,3 \\
+        | awk -F'\\t' '$1 != p { print; p = $1 }' \\
+        | cut -f1,2 \\
+        | initialize_alias_from_tsv.py out/docdb.lmdb
 
     # Or read from a pre-sorted file:
     initialize_alias_from_tsv.py out/docdb.lmdb stage/alias_sorted.tsv

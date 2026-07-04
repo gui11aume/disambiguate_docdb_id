@@ -1,7 +1,7 @@
-"""Shared parsing and storage helpers for DOCDB back-file and front-file scripts.
+"""Shared parsing and storage helpers for DOCDB backfile and frontfile scripts.
 
-Both `build_lmdb_from_backfile.py` (full rebuild from back-files) and
-`update_lmdb_from_frontfile.py` (incremental updates from front-files) consume
+Both `build_lmdb_from_backfile.py` (full rebuild from backfiles) and
+`update_lmdb_from_frontfile.py` (incremental updates from frontfiles) consume
 the same EPO DOCDB XML schema and write into the same LMDB layout, so the
 parsing logic, the constants identifying sub-databases and metadata keys, and
 the small ISO-timestamp helper all live here.
@@ -57,7 +57,7 @@ for entity_name, codepoint in name2codepoint.items():
 for entity_name, codepoint in name2codepoint.items():
     UPPERCASE_ENTITY_CODEPOINTS.setdefault(entity_name.upper(), codepoint)
 
-# Front-file `status` attribute values on `<exch:exchange-document>`.
+# frontfile `status` attribute values on `<exch:exchange-document>`.
 STATUS_AMEND = "A"
 STATUS_DELETE = "D"
 STATUS_CREATE = "C"
@@ -79,7 +79,7 @@ def processed_doc_number(text: str | bytes) -> bytes:
     take the first two characters as the country code, strip leading
     zeros from the remainder, and upper-case the result. The output has
     the same shape as the canonical primary key produced by the
-    back-file extractor, which lets the alias sub-DB chain into
+    backfile extractor, which lets the alias sub-DB chain into
     `docs_db` with no further normalisation.
 
     Returns an empty bytes object when the input has fewer than three

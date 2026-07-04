@@ -1,39 +1,52 @@
 #!/usr/bin/env python3
-"""Fast DOCDB XML extractor.
+"""Fast DOCDB frontfile XML extractor.
 
-Parses EPO DOCDB XML backfiles and writes one sorted TSV part file per input
-XML, ready for the docdb-tools/merge + load_lmdb_from_tsv.py pipeline.
+Parses EPO DOCDB XML frontfiles (weekly incremental deliveries) and writes
+one TSV part file per input XML. The output is a *changelog* (or "patch"):
+every row records one operation to apply to the existing LMDB snapshot, not a
+finished record. It is the frontfile counterpart of `backfile_to_tsv.py` and
+deliberately performs no LMDB access — mutating the database is the sole job of
+`apply_frontfile_to_lmdb.py`, which consumes the sorted output of this script.
+
+Each `<exch:exchange-document>` carries a `status` attribute with one of:
+
+* "A" (amend) and "C" (create): an upsert. The record identified by its full
+  `docdb_id` either replaces an existing entry under the same key or is
+  appended.
+* "D" (delete): a tombstone. The entry with the matching `docdb_id` is removed
+  from the key's list (and the key itself dropped once the list empties).
+
+frontfiles must be applied chronologically so that a later modification wins
+over an earlier one. A TSV+sort pipeline cannot "process as we go", so each row
+carries a sortable `seq` token that encodes the delivery order. Sorting the
+combined output on (key, seq) lays every key's full history out in order, and
+`apply_frontfile_to_lmdb.py` simply replays it.
+
+TSV columns (one operation per row):
+
+    key              country code + doc-number with leading zeros stripped and
+                     upper-cased — identical to the key produced by
+                     `backfile_to_tsv.py`, so rows line up with the existing
+                     docs sub-DB.
+    seq              `<delivery_order><position_in_file>`, fixed-width and
+                     zero-padded so a plain LC_ALL=C sort orders operations
+                     chronologically. `delivery_order` is the file's index in
+                     the sorted input list (weekly frontfiles are date-named,
+                     so sorted order is chronological); `position_in_file` is a
+                     per-file document counter.
+    op               the `status` attribute: "A", "C" or "D".
+    docdb_id         country + doc-number + kind, upper-cased.
+    orig_doc_number  doc-number from the "original" publication-reference, or
+                     empty string. Carried for parity with the backfile TSV
+                     (alias tooling); ignored by the docs-DB applier.
+    inventor         first inventor (sequence=1, docdb format); tabs -> space.
+    date_publ        8-digit publication date.
+    family_id        family-id attribute.
 
 Usage:
-    build_lmdb_with_backfile.py [--workers N] --out-dir DIR <path>...
+    frontfile_to_tsv.py [--workers N] --out-dir DIR <path>...
 
---workers (default: min(32, nproc)) controls process-level parallelism.
-For a single cold SATA disk, --workers 1 or 2 is often fastest since
-multiple processes reading simultaneously thrash the drive's seek queue.
-Raise for SSD/NVMe or when input and output live on separate disks.
-
-Output: one part_NNNNNN.tsv per XML file in <out-dir>.
-
-TSV columns:
-    key              the lookup key: country code concatenated with the
-                     `doc-number` attribute from <exch:exchange-document>,
-                     with leading zeros stripped from the numeric body.
-    docdb_id         built directly from the attributes of
-                        <exch:exchange-document country="..." doc-number="..." kind="...">
-                     as `country + doc-number + kind` (e.g. "AM170U",
-                     "US20130143024A1", "CA571119"). Taking the identifier
-                     from the very first informative line of the record
-                     avoids relying on any particular <publication-reference>
-                     child being present.
-    orig_doc_number  the doc-number text from
-                        <exch:publication-reference data-format="original">
-                                <document-id><doc-number>...</doc-number></document-id>
-                     when the record carries an "original" reference;
-                     empty string otherwise. The tab separator is emitted
-                     either way so the column stays positional.
-    inventor         first inventor (sequence=1, docdb format); tabs → space
-    date_publ        8-digit publication date from <exch:exchange-document>
-    family_id        family-id attribute from <exch:exchange-document>
+Inputs may be `.xml` / `.xml.gz` files or directories (walked recursively).
 """
 
 from __future__ import annotations
@@ -46,6 +59,8 @@ from pathlib import Path
 
 from lxml import etree as LET
 
+from helpers import EntityNormalizingReader, expand_paths, open_xml
+
 # ── XML tag constants ────────────────────────────────────────────────────────
 
 _NS_EXCH = "http://www.epo.org/exchange"
@@ -56,16 +71,24 @@ _TAG_DOCUMENT_ID = "document-id"
 _TAG_DOC_NUMBER = "doc-number"
 _TAG_NAME = "name"
 
+# frontfile `status` attribute values we know how to apply.
+_VALID_STATUS = frozenset({"A", "C", "D"})
+
+# Width of the two halves of the `seq` token. Eight digits cover ~10^8
+# deliveries and ten digits cover ~10^10 documents per file; both are far
+# beyond any realistic frontfile, and the fixed width makes a lexicographic
+# LC_ALL=C sort equivalent to a numeric one.
+_SEQ_FILE_WIDTH = 8
+_SEQ_POS_WIDTH = 10
+
 
 def _make_key(cc: bytes, doc_number: bytes) -> bytes:
     """Build an LMDB key by joining a country code and a doc-number with
-    leading zeros stripped from the numeric body. Both inputs are
-    expected to be already-trimmed bytes (e.g. taken straight from
-    <exch:exchange-document country="..." doc-number="...">).
+    leading zeros stripped from the numeric body, upper-cased.
 
-    The result is upper-cased so keys are case-insensitive for callers
-    (some DOCDB records carry lower-case kind suffixes in the
-    doc-number, which would otherwise produce duplicate keys)."""
+    Identical to the key construction in `backfile_to_tsv.py`, so frontfile
+    rows reference exactly the keys created from the backfile snapshot.
+    """
     return (cc + doc_number.lstrip(b"0")).upper()
 
 
@@ -73,17 +96,17 @@ def _make_key(cc: bytes, doc_number: bytes) -> bytes:
 
 
 class _Target:
-    """lxml SAX-like target.  Allocates no XML tree; one instance per file.
+    """lxml SAX-like target. Allocates no XML tree; one instance per file.
 
-    Uses __slots__ for fast attribute access across millions of callbacks.
-    The docdb_id is assembled from the `country`, `doc-number` and `kind`
-    attributes of the `<exch:exchange-document>` element itself — the very
-    first informative line of the record — so we never depend on any
-    particular `<publication-reference>` child appearing in the document.
+    Mirrors the back-file extractor's target but additionally captures the
+    `status` attribute and prefixes each emitted row with a chronological
+    `seq` token derived from the file's delivery index and a per-file counter.
     """
 
     __slots__ = (
         "rows",
+        "_file_idx",
+        "_pos",
         "_in_doc",
         "_seen_inv",
         "_in_inv",
@@ -97,12 +120,15 @@ class _Target:
         "_doc_number",
         "_date_publ",
         "_family_id",
+        "_status",
         "_inv_parts",
         "_orig_docnum_parts",
     )
 
-    def __init__(self) -> None:
+    def __init__(self, file_idx: int) -> None:
         self.rows: list[bytes] = []
+        self._file_idx = file_idx
+        self._pos = 0
         self._reset()
 
     def _reset(self) -> None:
@@ -119,6 +145,7 @@ class _Target:
         self._doc_number = ""
         self._date_publ = ""
         self._family_id = ""
+        self._status = ""
         self._inv_parts: list[str] = []
         self._orig_docnum_parts: list[str] = []
 
@@ -131,20 +158,13 @@ class _Target:
             kind = attrs.get("kind", "")
             self._date_publ = attrs.get("date-publ", "")
             self._family_id = attrs.get("family-id", "")
-            # Build the docdb_id from the very first informative line of
-            # the record. Upper-casing matches the convention used by the
-            # epodoc form (e.g. "AM170U", "US20130143024A1") and keeps
-            # keys/ids case-insensitive for downstream consumers.
+            self._status = attrs.get("status", "").strip()
             if self._country and self._doc_number:
                 self._docdb_id = (self._country + self._doc_number + kind).upper()
             return
         if not self._in_doc:
             return
 
-        # Capture doc-number text from the "original" publication-reference
-        # so downstream consumers can see the publishing office's native
-        # number alongside the docdb_id assembled from the document
-        # attributes above.
         if tag == _TAG_PUB_REF:
             if attrs.get("data-format") == "original":
                 self._in_pub_original = True
@@ -157,8 +177,6 @@ class _Target:
                 self._orig_docnum_parts = []
             return
 
-        # Only capture the first inventor with sequence="1" (DOCDB convention).
-        # If absent, inventor column stays empty.
         if self._seen_inv:
             return
         if tag == _TAG_INVENTOR:
@@ -170,7 +188,6 @@ class _Target:
 
     def data(self, text: str) -> None:
         if self._collecting_inv:
-            # Replace tabs as they arrive (cheaper than post-processing)
             self._inv_parts.append(text.replace("\t", " "))
         elif self._collecting_orig_docnum:
             self._orig_docnum_parts.append(text)
@@ -196,31 +213,33 @@ class _Target:
             self._in_inv = False
             return
         if tag == _TAG_DOC:
-            if self._docdb_id:
-                inv = "".join(self._inv_parts).strip()
-                # The key comes from `_make_key(country, doc-number)` and the
-                # docdb_id from `country + doc-number + kind` — both taken
-                # straight off the `<exch:exchange-document>` attributes.
-                # The "original" publication-reference, when present, is
-                # emitted in its own column; `_orig_docnum` defaults to ""
-                # so an absent original reference still yields a positional
-                # tab.
-                key = _make_key(self._country.encode(), self._doc_number.encode())
-                self.rows.append(
-                    key
-                    + b"\t"
-                    + self._docdb_id.encode()
-                    + b"\t"
-                    + self._orig_docnum.encode()
-                    + b"\t"
-                    + inv.encode()
-                    + b"\t"
-                    + self._date_publ.encode()
-                    + b"\t"
-                    + self._family_id.encode()
-                    + b"\n"
-                )
             self._in_doc = False
+            if not self._docdb_id or self._status not in _VALID_STATUS:
+                # No usable identifier, or a status we do not know how to apply.
+                # Drop it rather than emit an un-appliable row.
+                return
+            inv = "".join(self._inv_parts).strip()
+            seq = f"{self._file_idx:0{_SEQ_FILE_WIDTH}d}{self._pos:0{_SEQ_POS_WIDTH}d}"
+            self._pos += 1
+            key = _make_key(self._country.encode(), self._doc_number.encode())
+            self.rows.append(
+                key
+                + b"\t"
+                + seq.encode()
+                + b"\t"
+                + self._status.encode()
+                + b"\t"
+                + self._docdb_id.encode()
+                + b"\t"
+                + self._orig_docnum.encode()
+                + b"\t"
+                + inv.encode()
+                + b"\t"
+                + self._date_publ.encode()
+                + b"\t"
+                + self._family_id.encode()
+                + b"\n"
+            )
 
     def close(self) -> list[bytes]:
         return self.rows
@@ -230,49 +249,37 @@ class _Target:
 
 
 def _process_file(job: tuple[int, Path, Path]) -> str | None:
-    """Read one XML file, parse, write a part TSV.
+    """Read one frontfile XML, parse, write a part TSV.
 
     Returns an error string on failure, None on success. Must be a
     module-level function so multiprocessing can pickle it.
+
+    `file_idx` is the file's position in the chronologically sorted input list;
+    it becomes the high-order half of every `seq` token in this part, so rows
+    from later deliveries sort after rows from earlier ones.
     """
-    idx, xml_path, out_dir = job
+    file_idx, xml_path, out_dir = job
     try:
-        target = _Target()
+        target = _Target(file_idx)
         parser = LET.XMLParser(target=target, recover=True, huge_tree=True, resolve_entities=False)
         chunk_size = 1024 * 1024  # 1 MiB
-        with xml_path.open("rb") as f:
+        with open_xml(xml_path) as raw:
+            reader = EntityNormalizingReader(raw)
             while True:
-                chunk = f.read(chunk_size)
+                chunk = reader.read(chunk_size)
                 if not chunk:
                     break
                 parser.feed(chunk)
         rows = parser.close()
         if not rows:
             return None
-        # Write rows incrementally to avoid b"".join() peak memory
-        out_path = out_dir / f"part_{idx:06d}.tsv"
+        out_path = out_dir / f"part_{file_idx:06d}.tsv"
         with out_path.open("wb") as f:
             for row in rows:
                 f.write(row)
         return None
     except Exception as exc:
         return f"{xml_path}: {exc}"
-
-
-# ── Path collection ──────────────────────────────────────────────────────────
-
-
-def _collect_paths(inputs: list[Path]) -> list[Path]:
-    result: list[Path] = []
-    for p in inputs:
-        if p.is_dir():
-            for sub in sorted(p.rglob("*")):
-                n = sub.name.lower()
-                if sub.is_file() and n.endswith(".xml"):
-                    result.append(sub)
-        elif p.is_file():
-            result.append(p)
-    return result
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
@@ -287,7 +294,7 @@ def main(argv: list[str] | None = None) -> int:
         "inputs",
         nargs="+",
         type=Path,
-        help="XML files or directories (walked recursively).",
+        help="frontfile XML files, .xml.gz files, or directories (walked recursively).",
     )
     ap.add_argument(
         "--out-dir",
@@ -299,13 +306,16 @@ def main(argv: list[str] | None = None) -> int:
         "--workers",
         type=int,
         default=min(8, os.cpu_count() or 1),
-        help="Worker processes (default: min(32, nproc)). Use 1-2 for SATA.",
+        help="Worker processes (default: min(8, nproc)). Use 1-2 for SATA.",
     )
     args = ap.parse_args(argv)
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
-    paths = _collect_paths(args.inputs)
+    # `expand_paths` walks directories, keeps only .xml/.xml.gz, and returns a
+    # sorted list. The index of each path in this list is its delivery order,
+    # which we fold into the `seq` token to enforce chronological replay.
+    paths = expand_paths(args.inputs)
     if not paths:
         print("no XML files found", file=sys.stderr)
         return 1
