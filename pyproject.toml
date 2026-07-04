@@ -19,6 +19,7 @@ dependencies = [
     "anyio>=4.0.0",
     "httpx>=0.27.0",
     "mcp>=1.0.0",
+    "openai>=1.0.0",
 ]
 
 [project.optional-dependencies]
@@ -38,6 +39,7 @@ docdb-query = "docdb_id.cli.query:main"
 docdb-show-meta = "docdb_id.cli.show_meta:main"
 docdb-api = "docdb_id.api.server:main"
 docdb-mcp = "docdb_id.mcp.server:main"
+docdb-agent = "docdb_id.agent.vllm_agent:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/docdb_id"]
