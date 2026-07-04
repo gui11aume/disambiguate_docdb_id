@@ -13,7 +13,7 @@ from mcp.server.fastmcp import FastMCP
 
 logger = logging.getLogger("docdb_id.mcp")
 
-mcp = FastMCP("DOCDB Disambiguator")
+mcp = FastMCP("DOCDB Disambiguator", host="0.0.0.0", port=8001)
 
 
 @mcp.tool()
@@ -85,7 +85,7 @@ def main() -> None:
 
 def main_http() -> None:
     """Run as a standalone HTTP server (for hosted deployment)."""
-    mcp.run(transport="streamable-http", host="0.0.0.0", port=8001)
+    mcp.run(transport="streamable-http")
 
 
 if __name__ == "__main__":
