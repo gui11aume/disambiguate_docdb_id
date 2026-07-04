@@ -1,0 +1,27 @@
+[project]
+name = "disambiguate-docdb-id"
+version = "0.1.0"
+description = "A simple endpoint to disambiguate DOCDB identifiers"
+readme = "README.md"
+requires-python = ">=3.10,<3.11"
+authors = [
+    {name = "Guillaume Filion", email = "guillaume.filion@gmail.com"}
+]
+dependencies = [
+    "tqdm>=4.67.1,<5",
+    "lmdb>=2.2.0",
+    "msgpack>=1.1.0,<2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff==0.15.2",
+]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]
