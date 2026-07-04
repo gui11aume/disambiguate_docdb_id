@@ -156,6 +156,30 @@ show-meta:
 	$(PYTHON) -m docdb_id.cli.show_meta $(LMDB_OUT)
 
 
+# ── Deployment ────────────────────────────────────────────────────────────────
+COMPOSE ?= docker compose -f /opt/docdb/docker-compose.yml
+
+.PHONY: up down restart reload logs ps
+
+up:
+	$(COMPOSE) up -d --build
+
+down:
+	$(COMPOSE) down
+
+restart:
+	$(COMPOSE) restart $(SERVICE)
+
+reload:
+	$(COMPOSE) exec nginx nginx -s reload
+
+logs:
+	$(COMPOSE) logs -f --tail=50 $(SERVICE)
+
+ps:
+	$(COMPOSE) ps
+
+
 # ── Housekeeping ──────────────────────────────────────────────────────────────
 clean:
 	rm -rf $(STAGE)
