@@ -2,15 +2,23 @@
 
 Requires a running vLLM server:
 
-    vllm serve Qwen/Qwen3-35B-A3B-FP8 \\
+    vllm serve Qwen/Qwen3.6-35B-A3B-FP8 \\
+        --reasoning-parser qwen3 \\
         --enable-auto-tool-choice \\
-        --tool-call-parser hermes
+        --tool-call-parser qwen3_coder \\
+        --tensor-parallel 2 \\
+        --max-num-seqs 1 \\
+        --gpu-memory-utilization 0.95 \\
+        --kv-cache-dtype fp8
 
 Environment variables:
     VLLM_BASE_URL:  vLLM server URL (default: http://localhost:8000/v1)
     DOCDB_API_URL:  DOCDB API URL (default: https://docdb.sarl-graip.fr)
     VLLM_MODEL:     model name as served by vLLM
-                    (default: Qwen/Qwen3-35B-A3B-FP8)
+                    (default: Qwen/Qwen3.6-35B-A3B-FP8)
+
+Example usage:
+    uv run docdb-agent --debug "US 8,000,000 (Greenberg) teaches that..."
 """
 
 from __future__ import annotations
@@ -22,11 +30,15 @@ import os
 import httpx
 from openai import OpenAI
 
+from .default_prompt import DEFAULT_SYSTEM_PROMPT
+
 logger = logging.getLogger(__name__)
 
 VLLM_BASE_URL = os.environ.get("VLLM_BASE_URL", "http://localhost:8000/v1")
 DOCDB_API_URL = os.environ.get("DOCDB_API_URL", "https://docdb.sarl-graip.fr")
-MODEL = os.environ.get("VLLM_MODEL", "Qwen/Qwen3-35B-A3B-FP8")
+MODEL = os.environ.get("VLLM_MODEL", "Qwen/Qwen3.6-35B-A3B-FP8")
+
+SYSTEM_PROMPT = os.environ.get("SYSTEM_PROMPT", DEFAULT_SYSTEM_PROMPT)
 
 TOOLS = [
     {
@@ -152,14 +164,14 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO)
 
     parser = argparse.ArgumentParser(description="Patent disambiguation agent")
-    parser.add_argument("query", help='e.g. "Who invented US 8,000,000?"')
+    parser.add_argument("query", help='e.g. "Who invented US 7,000,000?"')
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
 
     if args.debug:
         logging.getLogger().setLevel(logging.DEBUG)
 
-    answer = run(args.query)
+    answer = run(args.query, system_prompt=SYSTEM_PROMPT)
     print(answer)
 
 
