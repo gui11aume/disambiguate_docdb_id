@@ -22,3 +22,17 @@ def test_partition_frontfile_items_splits_on_existing_tsvs(tmp_path: Path):
 
     assert [item.key for item in pending] == ["pending"]
     assert already == 2
+
+
+def test_partition_frontfile_items_skips_applied_parts_without_local_tsv(tmp_path: Path):
+    """A part already recorded as applied in the LMDB must be skipped even if
+    local staging was wiped and has no matching TSV - this is what makes it
+    safe to delete the staging directory between weekly runs."""
+    out_dir = tmp_path / "parts"
+    out_dir.mkdir()
+
+    items = [_item("already_applied"), _item("pending")]
+    pending, already = _partition_frontfile_items(items, out_dir, frozenset({"already_applied"}))
+
+    assert [item.key for item in pending] == ["pending"]
+    assert already == 1

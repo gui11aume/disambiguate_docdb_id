@@ -33,6 +33,7 @@ import sys
 from pathlib import Path
 
 from docdb_id.bdds.ingest import IngestConfig, run
+from docdb_id.store.apply_frontfile import load_applied_frontfile_parts
 
 FRONTFILE_PRODUCT_ID = 3
 
@@ -90,6 +91,16 @@ def main(argv: list[str] | None = None) -> int:
         default=FRONTFILE_PRODUCT_ID,
         help=f"BDDS product id for the frontfile (default: {FRONTFILE_PRODUCT_ID}).",
     )
+    ap.add_argument(
+        "--lmdb",
+        type=Path,
+        default=None,
+        help=(
+            "Existing LMDB to check for already-applied frontfile parts. Lets "
+            "--out-dir be cleared between runs without re-fetching deliveries "
+            "already incorporated into this LMDB."
+        ),
+    )
     args = ap.parse_args(argv)
 
     logging.basicConfig(
@@ -105,6 +116,7 @@ def main(argv: list[str] | None = None) -> int:
     out_dir: Path = args.out_dir
     work_root: Path = args.work_dir or (out_dir.parent / "frontfile_work")
     staging = args.staging or (out_dir.parent / "frontfile_download")
+    applied_parts = load_applied_frontfile_parts(args.lmdb) if args.lmdb else frozenset()
 
     config = IngestConfig(
         product_id=args.product_id,
@@ -119,6 +131,7 @@ def main(argv: list[str] | None = None) -> int:
         staging=staging if args.download else None,
         offline_inputs=None if args.download else args.inputs,
         skip_download_if_complete=True,
+        applied_parts=applied_parts,
     )
     return run(config)
 

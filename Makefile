@@ -31,6 +31,10 @@ NJOBS   ?= $(shell echo $$(( $(NCPU) < 8 ? $(NCPU) : 8 )))
 # parsing when you have disk to spare.
 INFLIGHT ?= 2
 
+# Frontfile deliveries are weekly and small, so there's little to gain from
+# overlapping downloads; default to one at a time.
+FRONTFILE_INFLIGHT ?= 1
+
 UV       ?= uv
 PYTHON   ?= $(UV) run python
 
@@ -124,12 +128,22 @@ ingest-frontfile: | install
 	    --out-dir $(FRONTFILE_PARTS) \
 	    --staging $(FRONTFILE_STAGING) \
 	    --work-dir $(FRONTFILE_WORK) \
-	    --workers $(NJOBS) --in-flight $(INFLIGHT)
+	    --workers $(NJOBS) --in-flight $(FRONTFILE_INFLIGHT) \
+	    --lmdb $(LMDB_OUT)
 	@echo "$(FRONTFILE_PARTS): $$(find $(FRONTFILE_PARTS) -name '*.tsv' | wc -l) parts"
 
 # Sort the accumulated changelog parts by (key, seq), then apply them to the
 # docs sub-DB and record the applied frontfile part stems in the meta sub-DB.
-apply-frontfile: $(ALIAS_DONE) | install
+#
+# Deliberately does not list $(ALIAS_DONE) as a prerequisite: that would pull
+# in the full backfile chain ($(ALIAS_SORTED), $(CORE_DONE),
+# $(BACKFILE_PARTS)/.done) whenever any of those staging files are missing,
+# even if the alias DB is already loaded — e.g. after `make clean`, or on a
+# host that only ever received the finished LMDB. Frontfile updates apply to
+# an already-built LMDB and must never trigger a backfile rebuild; if the
+# alias DB really isn't loaded yet, fail fast instead of silently re-deriving it.
+apply-frontfile: | install
+	@test -f $(ALIAS_DONE) || { echo "error: $(ALIAS_DONE) missing — run 'make backfile-alias' first" >&2; exit 1; }
 	$(MAKE) ingest-frontfile
 	$(call cat_parts,$(FRONTFILE_PARTS)) \
 	    | $(SORT) $(SORTOPTS) -t $$'\t' -k1,1 -k2,2 > $(FRONTFILE_SORTED)
@@ -137,6 +151,10 @@ apply-frontfile: $(ALIAS_DONE) | install
 	$(PYTHON) -m docdb_id.cli.apply_frontfile $(LMDB_OUT) $(FRONTFILE_SORTED) \
 	    $$(find $(FRONTFILE_PARTS) -name '*.tsv' -print)
 	$(MAKE) prune-aliases
+	# Applied part stems are now durably recorded in the LMDB meta sub-DB
+	# (see load_applied_frontfile_parts), so local staging is disposable:
+	# wipe it so next run starts clean instead of accumulating forever.
+	rm -rf $(FRONTFILE_PARTS) $(FRONTFILE_STAGING) $(FRONTFILE_WORK) $(FRONTFILE_SORTED)
 
 # Remove aliases whose target key no longer exists in the docs sub-DB and record
 # (via the alias_no_dangling meta key) that the alias DB is free of dangling

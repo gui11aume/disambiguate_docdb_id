@@ -71,6 +71,40 @@ from docdb_id.store.schema import (
 logger = logging.getLogger("docdb_id.store.apply_frontfile")
 
 
+def load_applied_frontfile_parts(lmdb_path: Path) -> frozenset[str]:
+    """Return the frontfile part stems already recorded as applied in *lmdb_path*.
+
+    This is the durable record of what has been incorporated: the ingest step
+    consults it to skip re-fetching deliveries that were already applied in a
+    previous run, even after the local staging directory has been wiped.
+    """
+    if not lmdb_path.exists():
+        return frozenset()
+    env = lmdb.open(
+        str(lmdb_path),
+        readonly=True,
+        subdir=lmdb_path.is_dir(),
+        lock=False,
+        readahead=False,
+        max_dbs=3,
+    )
+    try:
+        try:
+            meta_db = env.open_db(META_DB_NAME, create=False)
+        except lmdb.NotFoundError:
+            return frozenset()
+        applied: set[str] = set()
+        with env.begin(write=False) as txn, txn.cursor(db=meta_db) as cursor:
+            if cursor.set_range(FRONTFILE_APPLIED_PREFIX):
+                for key in cursor.iternext(values=False):
+                    if not key.startswith(FRONTFILE_APPLIED_PREFIX):
+                        break
+                    applied.add(key[len(FRONTFILE_APPLIED_PREFIX) :].decode("utf-8"))
+        return frozenset(applied)
+    finally:
+        env.close()
+
+
 def upsert_record(existing: list[Record], record: Record) -> list[Record]:
     """Replace the entry whose `docdb_id` matches `record[0]`, appending otherwise."""
     docdb_id = record[0]

@@ -10,7 +10,7 @@ import msgpack
 import pytest
 
 from docdb_id.alias.extract import orig_aliases
-from docdb_id.store.apply_frontfile import apply_changelog
+from docdb_id.store.apply_frontfile import apply_changelog, load_applied_frontfile_parts
 from docdb_id.store.schema import (
     ALIAS_DB_NAME,
     BUILD_STATUS_COMPLETE,
@@ -89,3 +89,16 @@ def test_apply_delete_keeps_alias_when_mapped_elsewhere(lmdb_path: Path):
     apply_changelog(changelog, lmdb_path)
 
     assert _read_alias(lmdb_path, alias) == b"OTHERKEY"
+
+
+def test_load_applied_frontfile_parts_round_trips(lmdb_path: Path):
+    changelog = io.BytesIO(
+        b"US7777777\t000000010000000001\tC\tUS7777777A1\t777777-1\tInv\t20210101\t2\n"
+    )
+    apply_changelog(changelog, lmdb_path, applied_parts=["docdb_xml_202601_Amend_001"])
+
+    assert load_applied_frontfile_parts(lmdb_path) == frozenset({"docdb_xml_202601_Amend_001"})
+
+
+def test_load_applied_frontfile_parts_empty_for_missing_lmdb(tmp_path: Path):
+    assert load_applied_frontfile_parts(tmp_path / "does_not_exist.lmdb") == frozenset()

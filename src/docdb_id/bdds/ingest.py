@@ -198,6 +198,10 @@ class IngestConfig:
     staging: Path | None = None
     offline_inputs: list[Path] | None = None
     skip_download_if_complete: bool = False  # frontfile: reuse valid staging files
+    # frontfile: part stems already recorded as applied in the target LMDB's
+    # meta sub-DB. Checked in addition to local TSV presence, so a cleared
+    # staging directory does not force re-fetching the entire delivery history.
+    applied_parts: frozenset[str] = frozenset()
 
 
 # ── Coordinator ──────────────────────────────────────────────────────────────
@@ -448,9 +452,21 @@ def _frontfile_part_path(out_dir: Path, key: str) -> Path:
     return out_dir / f"part_{key}.tsv"
 
 
-def _partition_frontfile_items(items: list[WorkItem], out_dir: Path) -> tuple[list[WorkItem], int]:
-    """Split catalog items into pending work and a count of already-ingested parts."""
-    pending = [item for item in items if not _frontfile_part_path(out_dir, item.key).exists()]
+def _partition_frontfile_items(
+    items: list[WorkItem], out_dir: Path, applied_parts: frozenset[str] = frozenset()
+) -> tuple[list[WorkItem], int]:
+    """Split catalog items into pending work and a count of already-ingested parts.
+
+    An item counts as already ingested if its part TSV is already staged
+    locally, or if its key is already recorded as applied in the target LMDB
+    (`applied_parts`) - the latter is what lets local staging be deleted
+    between runs without forcing a re-fetch of the whole delivery history.
+    """
+    pending = [
+        item
+        for item in items
+        if item.key not in applied_parts and not _frontfile_part_path(out_dir, item.key).exists()
+    ]
     return pending, len(items) - len(pending)
 
 
@@ -485,7 +501,7 @@ def run(config: IngestConfig) -> int:
     work_items = items
     skipped_upfront = 0
     if config.parser_kind == "frontfile":
-        work_items, skipped_upfront = _partition_frontfile_items(items, config.out_dir)
+        work_items, skipped_upfront = _partition_frontfile_items(items, config.out_dir, config.applied_parts)
         if online and config.delivery_mode == "all":
             n_deliveries = len({item.delivery_id for item in items if item.delivery_id is not None})
             logger.info(
