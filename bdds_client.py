@@ -30,6 +30,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -55,6 +56,7 @@ DOWNLOAD_TIMEOUT = 300  # seconds, for body reads on downloads
 MAX_RETRIES = 5
 RETRY_BACKOFF_BASE = 2.0  # seconds; multiplied by 2**attempt
 DOWNLOAD_CHUNK = 1 << 20  # 1 MiB
+PART_SUFFIX = ".part"  # in-progress downloads land here until fully written
 
 
 class BddsError(RuntimeError):
@@ -189,14 +191,26 @@ class BddsClient:
         # matches chronological order for that format.
         return max(deliveries, key=lambda d: d.get("deliveryPublicationDatetime", ""))
 
+    def all_deliveries(self, product_id: int) -> list[dict[str, Any]]:
+        deliveries = self.get_product(product_id).get("deliveries") or []
+        if not deliveries:
+            raise BddsError(f"product {product_id} has no deliveries")
+        # Oldest first so incremental front-file updates can be applied in order.
+        return sorted(deliveries, key=lambda d: d.get("deliveryPublicationDatetime", ""))
+
     def download_file(self, product_id: int, delivery_id: int, file_id: int, dst: Path) -> None:
         """Stream one delivery file to `dst`. Always starts from byte 0.
 
         The EPO download endpoint ignores `Range` requests, so resuming a
         partially-downloaded file is not possible — every invocation pulls
-        the full body and truncates `dst`.
+        the full body and truncates the target.
+
+        The body is streamed to a sibling `*.part` file and renamed onto `dst`
+        only after the full transfer succeeds, so an interrupted download never
+        leaves a truncated file at the final path.
         """
         url = f"{API_BASE}/products/{product_id}/delivery/{delivery_id}/file/{file_id}/download"
+        part = dst.with_name(dst.name + PART_SUFFIX)
         last_exc: Exception | None = None
         for attempt in range(MAX_RETRIES):
             req = self._build_request(url)
@@ -204,7 +218,8 @@ class BddsClient:
                 with urllib.request.urlopen(req, timeout=DOWNLOAD_TIMEOUT) as resp:
                     content_length = resp.headers.get("Content-Length")
                     total_bytes = int(content_length) if content_length is not None else None
-                    _stream_to_file(resp, dst, total_bytes=total_bytes)
+                    _stream_to_file(resp, part, total_bytes=total_bytes)
+                part.replace(dst)
                 return
             except urllib.error.HTTPError as exc:
                 last_exc = exc
@@ -221,6 +236,7 @@ class BddsClient:
                     _sleep_backoff(attempt, reason=str(exc.reason))
                     continue
                 raise BddsError(f"download {dst.name} failed: {exc.reason}") from exc
+        _unlink_quietly(part)
         raise BddsError(f"download {dst.name} failed after {MAX_RETRIES} attempts: {last_exc}")
 
 
@@ -261,6 +277,56 @@ def _stream_to_file(resp: Any, dst: Path, *, total_bytes: int | None) -> None:
                 progress.update(len(chunk))
     finally:
         progress.close()
+
+
+def _expected_file_size(file_meta: dict[str, Any]) -> int | None:
+    """Best-effort extraction of the advertised file size from a BDDS file object."""
+    for key in ("fileSize", "fileSizeBytes", "size", "sizeInBytes", "contentLength"):
+        value = file_meta.get(key)
+        if value is None:
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            logger.debug("ignoring non-integer %s for %s: %r", key, file_meta.get("fileName", "<unknown>"), value)
+    return None
+
+
+def _unlink_quietly(path: Path) -> None:
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        logger.debug("could not remove %s: %s", path, exc)
+
+
+def _zip_is_valid(path: Path) -> bool:
+    """Return True if `path` is a structurally sound zip archive.
+
+    `testzip()` walks the central directory and CRC-checks every member, so a
+    truncated download (missing the end-of-central-directory record or with a
+    short final member) is reliably detected.
+    """
+    try:
+        with zipfile.ZipFile(path) as zf:
+            return zf.testzip() is None
+    except (zipfile.BadZipFile, OSError) as exc:
+        logger.debug("zip validation failed for %s: %s", path, exc)
+        return False
+
+
+def _file_is_complete(dst: Path, file_meta: dict[str, Any]) -> bool:
+    if not dst.exists():
+        return False
+    expected_size = _expected_file_size(file_meta)
+    if expected_size is not None and dst.stat().st_size != expected_size:
+        return False
+    # Zip archives are the deliverables we must apply, so verify their integrity
+    # rather than trusting mere existence: a truncated archive is re-fetched.
+    if dst.suffix.lower() == ".zip":
+        return _zip_is_valid(dst)
+    return True
 
 
 def credentials_from_env() -> tuple[str, str]:
@@ -317,4 +383,65 @@ def download_latest_delivery(product_id: int, out_dir: Path) -> int:
         logger.error("finished with %d error(s)", errors)
         return 1
     logger.info("done")
+    return 0
+
+
+def download_all_deliveries(product_id: int, out_dir: Path) -> int:
+    """Download missing files from every delivery of `product_id` into `out_dir`.
+
+    Existing files are skipped when they are present and, if the API advertises
+    a byte size, their local size matches. Truncated files are downloaded again
+    from byte 0 because the EPO endpoint does not support HTTP Range requests.
+    """
+    username, password = credentials_from_env()
+    client = BddsClient(username, password)
+
+    deliveries = client.all_deliveries(product_id)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    total_files = sum(len(delivery.get("files") or []) for delivery in deliveries)
+    logger.info(
+        "checking product %d: %d delivery(s), %d file(s) → %s",
+        product_id,
+        len(deliveries),
+        total_files,
+        out_dir,
+    )
+
+    fetched = 0
+    skipped = 0
+    errors = 0
+    for delivery in deliveries:
+        files = delivery.get("files") or []
+        delivery_fetched = 0
+        delivery_skipped = 0
+        logger.info(
+            "checking delivery %d (%s): %d file(s)",
+            delivery["deliveryId"],
+            delivery.get("deliveryName", ""),
+            len(files),
+        )
+        for f in files:
+            dst = out_dir / f["fileName"]
+            if _file_is_complete(dst, f):
+                skipped += 1
+                delivery_skipped += 1
+                continue
+            try:
+                client.download_file(product_id, delivery["deliveryId"], f["fileId"], dst)
+                fetched += 1
+                delivery_fetched += 1
+            except BddsError as exc:
+                logger.error("download failed for %s: %s", f["fileName"], exc)
+                errors += 1
+        logger.info(
+            "delivery %d complete: fetched %d, skipped %d",
+            delivery["deliveryId"],
+            delivery_fetched,
+            delivery_skipped,
+        )
+
+    if errors:
+        logger.error("finished with %d error(s); fetched %d, skipped %d", errors, fetched, skipped)
+        return 1
+    logger.info("done: fetched %d, skipped %d", fetched, skipped)
     return 0

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Project the main 6-column TSV down to layer_1's 2-column input.
+"""Project the main 6-column TSV down to the alias 2-column input.
 
 The main TSV has columns:
 
@@ -10,7 +10,7 @@ For every row we form the candidate identifier `key[:2] + orig_doc_number`
 publication number — and re-normalise it with
 `helpers.processed_doc_number`. The API endpoint will receive the
 country code and the number as two separate parameters and combine
-them in the same way, so layer_1 keys built here are byte-for-byte
+them in the same way, so alias keys built here are byte-for-byte
 identical to what the endpoint will compute at lookup time.
 
 Each surviving row is emitted as ::
@@ -23,12 +23,12 @@ We skip rows where:
   * the normalised alias does not match `[A-Z][A-Z][A-Z0-9][-A-Z0-9]*`;
   * the normalised alias collapses onto `key` itself (a direct probe
     of `docs_db` already resolves the query, so an indirection
-    through layer_1 would be pure overhead and a likely source of
+    through the alias DB would be pure overhead and a likely source of
     duplicate-key noise during the bulk load).
 
 The output is intentionally unsorted: the downstream loader requires
 ascending order on column 1, so this script is meant to be piped into
-`LC_ALL=C sort -u` before being fed to `initialize_layer1_from_tsv.py`.
+`LC_ALL=C sort -u` before being fed to `initialize_alias_from_tsv.py`.
 `sort -u` removes lines that are byte-identical (same processed alias
 *and* same primary key), which is the common case when the same row
 appears in more than one back-file XML; genuine collisions — same
@@ -37,7 +37,7 @@ dedup, end up adjacent after sorting, and trip the loader's loud-fail
 path.
 
 Usage:
-    extract_layer1_tsv.py [<sorted.tsv>]            # input defaults to stdin
+    extract_alias_tsv.py [<sorted.tsv>]            # input defaults to stdin
 """
 
 from __future__ import annotations
@@ -76,7 +76,7 @@ SOUTH_AFRICA_A_RE = re.compile(rb"^A[0-9]+$")
 
 
 JUST_NUMBERS_RE = re.compile(rb"^[0-9]+$")
-LAYER_1_ALIAS_RE = re.compile(rb"^[A-Z][A-Z][A-Z0-9][A-Z0-9][A-Z0-9]+$")
+ALIAS_RE = re.compile(rb"^[A-Z][A-Z][A-Z0-9][A-Z0-9][A-Z0-9]+$")
 ZERO_STRIPPED_KEY_RE = re.compile(rb"^([A-Z]{2})([0-9]{4})([0-9]{6})$")
 WO_TWO_DIGIT_YEAR_KEY_RE = re.compile(rb"^WO([0-9]{2})([0-9]{5})$")
 JP_ERA_KEY_RE = re.compile(rb"^JP[HS]([0-9]{3,})$")
@@ -154,7 +154,7 @@ def jp_era_synonyms(key: bytes) -> Iterator[bytes]:
     plus each progressively zero-stripped variant so callers can find
     the key whether or not they padded the document number. The
     3-digit lower bound on the suffix keeps every emitted alias at or
-    above the 5-character minimum enforced by `LAYER_1_ALIAS_RE`.
+    above the 5-character minimum enforced by `ALIAS_RE`.
     """
     match = JP_ERA_KEY_RE.fullmatch(key)
     if match is None:
@@ -193,14 +193,14 @@ def jp_era_padded_synonyms(key: bytes) -> Iterator[bytes]:
 
 
 def _write_alias(out, alias: bytes, key: bytes) -> bool:
-    """Normalize *alias* and write the layer_1 row. Returns True on success.
+    """Normalize *alias* and write the alias row. Returns True on success.
 
     Per the lookup contract, every CC except ``JP`` strips leading
-    zeros from the number portion at query time, so a layer_1 alias of
+    zeros from the number portion at query time, so an alias of
     the form ``CC0…`` for those CCs is unreachable. We peel off leading
     zeros at position 2 until the next character is non-zero. The
     alias is dropped if the body collapses below the 3-character
-    minimum required by ``LAYER_1_ALIAS_RE``.
+    minimum required by ``ALIAS_RE``.
     """
     if alias[:2] != b"JP":
         body = alias[2:].lstrip(b"0")
@@ -212,7 +212,7 @@ def _write_alias(out, alias: bytes, key: bytes) -> bool:
 
 
 def emit(src, out) -> tuple[int, int, int, int, int, int, int, int]:
-    """Read 6-col TSV rows from *src* and write 2-col layer_1 input to *out*.
+    """Read 6-col TSV rows from *src* and write 2-col alias input to *out*.
 
     Returns `(n_in, n_out, n_zero_stripped, n_wo_two_digit_year,
     n_jp_era, n_jp_era_padded, n_skipped_equal, n_skipped_pattern)` so
@@ -227,7 +227,7 @@ def emit(src, out) -> tuple[int, int, int, int, int, int, int, int]:
     produced from `JP{H,S}YY<doc>` keys.
     `n_skipped_equal` counts rows where the processed alias collapsed
     onto the primary key and was therefore omitted; `n_skipped_pattern`
-    counts rows whose processed alias did not match the layer_1 key
+    counts rows whose processed alias did not match the alias key
     pattern.
     """
     n_in = 0
@@ -304,7 +304,7 @@ def emit(src, out) -> tuple[int, int, int, int, int, int, int, int]:
 
         if JUST_NUMBERS_RE.fullmatch(alias) and len(alias) > 3:
             alias = cc + alias
-        if not LAYER_1_ALIAS_RE.fullmatch(alias):
+        if not ALIAS_RE.fullmatch(alias):
             n_skipped_pattern += 1
             print(f"skipped pattern: {orig!r} {alias!r} ({key!r})", file=sys.stderr)
             continue
@@ -327,7 +327,7 @@ def emit(src, out) -> tuple[int, int, int, int, int, int, int, int]:
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     if len(argv) > 1:
-        print("usage: extract_layer1_tsv.py [<sorted.tsv>]", file=sys.stderr)
+        print("usage: extract_alias_tsv.py [<sorted.tsv>]", file=sys.stderr)
         return 2
 
     out = sys.stdout.buffer
@@ -357,7 +357,7 @@ def main(argv: list[str] | None = None) -> int:
         ) = emit(sys.stdin.buffer, out)
 
     print(
-        f"layer_1 extract: {n_in:,} rows in, {n_out:,} aliases out, "
+        f"alias extract: {n_in:,} rows in, {n_out:,} aliases out, "
         f"{n_zero_stripped:,} zero-stripped key aliases, "
         f"{n_wo_two_digit_year:,} WO two-digit-year aliases, "
         f"{n_jp_era:,} JP era aliases, "

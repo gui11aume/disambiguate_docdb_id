@@ -12,7 +12,7 @@ Lookup is two-tiered:
 
 1. Try the normalised candidate as a key in the ``docs`` sub-DB. If a
    record list comes back, emit it.
-2. Otherwise, try the same key in the ``layer_1`` alias sub-DB. A hit
+2. Otherwise, try the same key in the ``alias`` sub-DB. A hit
    there yields the canonical primary key, which we then probe in
    ``docs`` to recover the record list. This rescues records whose
    canonical key derives from the office's exchange-document number
@@ -37,7 +37,7 @@ import lmdb
 import msgpack
 
 DOCS_DB_NAME = b"docs"
-LAYER_1_DB_NAME = b"layer_1"
+ALIAS_DB_NAME = b"alias"
 KIND_RE = re.compile(r"[A-Z]\d?$")
 
 
@@ -68,13 +68,13 @@ def main() -> int:
         max_dbs=3,
     )
     docs_db = env.open_db(DOCS_DB_NAME)
-    # Older LMDB envs built before the layer_1 stage existed will not
+    # Older LMDB envs built before the alias stage existed will not
     # have this sub-DB; treat that as "no aliases known" rather than
     # a fatal error.
     try:
-        layer_1_db = env.open_db(LAYER_1_DB_NAME)
+        alias_db = env.open_db(ALIAS_DB_NAME)
     except lmdb.NotFoundError:
-        layer_1_db = None
+        alias_db = None
 
     try:
         with env.begin(write=False) as txn:
@@ -87,8 +87,8 @@ def main() -> int:
                 if not key:
                     continue
                 blob = txn.get(key, db=docs_db)
-                if blob is None and layer_1_db is not None:
-                    primary = txn.get(key, db=layer_1_db)
+                if blob is None and alias_db is not None:
+                    primary = txn.get(key, db=alias_db)
                     if primary is not None:
                         blob = txn.get(primary, db=docs_db)
                 if blob is None and len(key) == 13 and key[6:7] == b"0":

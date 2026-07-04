@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Load the layer_1 sub-DB from a sorted 2-column TSV.
+"""Load the alias sub-DB from a sorted 2-column TSV.
 
 Input columns:
 
@@ -8,7 +8,7 @@ Input columns:
 The input must be sorted ascending on column 1 with ``LC_ALL=C`` (which
 is what GNU ``sort`` produces by default). Identical lines must already
 be deduplicated upstream — pipe through ``sort -u`` between
-``extract_layer1_tsv.py`` and this loader.
+``extract_alias_tsv.py`` and this loader.
 
 Two correctness invariants are enforced via LMDB primitives instead of
 defensive Python code:
@@ -28,11 +28,11 @@ so the operator can fix the upstream data.
 
 Usage:
     # Typical pipeline:
-    extract_layer1_tsv.py stage/sorted.tsv | LC_ALL=C sort -u | \\
-        initialize_layer1_from_tsv.py out/docdb.lmdb
+    extract_alias_tsv.py stage/sorted.tsv | LC_ALL=C sort -u | \\
+        initialize_alias_from_tsv.py out/docdb.lmdb
 
     # Or read from a pre-sorted file:
-    initialize_layer1_from_tsv.py out/docdb.lmdb stage/layer1_sorted.tsv
+    initialize_alias_from_tsv.py out/docdb.lmdb stage/alias_sorted.tsv
 """
 from __future__ import annotations
 
@@ -42,20 +42,20 @@ from pathlib import Path
 import lmdb
 
 from helpers import (
+    ALIAS_DB_NAME,
     BUILD_STATUS_COMPLETE,
     BUILD_STATUS_IN_PROGRESS,
     DEFAULT_COMMIT_EVERY,
     DEFAULT_MAP_SIZE,
     DOCS_DB_NAME,
-    LAYER_1_DB_NAME,
     META_DB_NAME,
     META_KEY_BUILD_STATUS,
     META_KEY_LAST_UPDATED,
     now_iso,
 )
 
-LAYER_1_BUILD_STATUS_KEY = b"layer_1_build_status"
-LAYER_1_LAST_UPDATED_KEY = b"layer_1_last_updated"
+ALIAS_BUILD_STATUS_KEY = b"alias_build_status"
+ALIAS_LAST_UPDATED_KEY = b"alias_last_updated"
 
 
 class _Collision(Exception):
@@ -65,13 +65,13 @@ class _Collision(Exception):
 def _put_or_die(
     txn: lmdb.Transaction,
     cursor: lmdb.Cursor,
-    layer_1_db,
+    alias_db,
     alias: bytes,
     primary_key: bytes,
     line_no: int,
     last_alias: bytes | None,
 ) -> None:
-    """Append ``(alias, primary_key)`` to layer_1 with loud failures.
+    """Append ``(alias, primary_key)`` to the alias DB with loud failures.
 
     py-lmdb signals ``append=True``/``overwrite=False`` failures by
     returning ``False`` from ``cursor.put`` rather than raising, so we
@@ -83,7 +83,7 @@ def _put_or_die(
     if cursor.put(alias, primary_key, append=True, overwrite=False):
         return
 
-    existing = txn.get(alias, db=layer_1_db)
+    existing = txn.get(alias, db=alias_db)
     if existing is not None:
         if existing == primary_key:
             msg = (
@@ -106,23 +106,23 @@ def _put_or_die(
     raise _Collision(msg)
 
 
-def load_layer1(
+def load_alias(
     src,
     lmdb_path: Path,
     *,
     map_size: int = DEFAULT_MAP_SIZE,
     commit_every: int = DEFAULT_COMMIT_EVERY,
 ) -> tuple[int, int]:
-    """Load *src* into the ``layer_1`` sub-DB of an existing LMDB env.
+    """Load *src* into the ``alias`` sub-DB of an existing LMDB env.
 
     Returns ``(n_written, n_skipped_docs)``. The env is expected to have
-    been built by ``initialize_lmdb_from_tsv.py`` already; this loader
-    only adds the layer_1 sub-DB and updates a couple of meta keys.
+    been built by ``initialize_core_from_tsv.py`` already; this loader
+    only adds the alias sub-DB and updates a couple of meta keys.
     """
     if not lmdb_path.exists():
         raise FileNotFoundError(
             f"{lmdb_path} does not exist; build the docs sub-DB first "
-            f"with initialize_lmdb_from_tsv.py."
+            f"with initialize_core_from_tsv.py."
         )
 
     env = lmdb.open(
@@ -138,16 +138,16 @@ def load_layer1(
         max_dbs=3,
     )
 
-    layer_1_db = env.open_db(LAYER_1_DB_NAME)
+    alias_db = env.open_db(ALIAS_DB_NAME)
     docs_db = env.open_db(DOCS_DB_NAME, create=False)
     meta_db = env.open_db(META_DB_NAME)
 
-    # Idempotent re-runs: clear any previous content of layer_1 before
-    # re-loading. The sub-DB itself is preserved so callers don't have
-    # to worry about handle invalidation.
+    # Idempotent re-runs: clear any previous content of the alias sub-DB
+    # before re-loading. The sub-DB itself is preserved so callers don't
+    # have to worry about handle invalidation.
     with env.begin(write=True) as txn:
-        txn.drop(layer_1_db, delete=False)
-        txn.put(LAYER_1_BUILD_STATUS_KEY, BUILD_STATUS_IN_PROGRESS, db=meta_db)
+        txn.drop(alias_db, delete=False)
+        txn.put(ALIAS_BUILD_STATUS_KEY, BUILD_STATUS_IN_PROGRESS, db=meta_db)
         txn.put(META_KEY_LAST_UPDATED, now_iso().encode(), db=meta_db)
 
     n = 0
@@ -155,7 +155,7 @@ def load_layer1(
     last_alias: bytes | None = None
 
     txn = env.begin(write=True)
-    cursor = txn.cursor(db=layer_1_db)
+    cursor = txn.cursor(db=alias_db)
     try:
         for line_no, raw in enumerate(src, start=1):
             line = raw.rstrip(b"\n") if isinstance(raw, bytes) else raw.rstrip("\n").encode()
@@ -175,15 +175,15 @@ def load_layer1(
                 n_skipped_docs += 1
                 continue
 
-            _put_or_die(txn, cursor, layer_1_db, alias, primary_key, line_no, last_alias)
+            _put_or_die(txn, cursor, alias_db, alias, primary_key, line_no, last_alias)
             last_alias = alias
             n += 1
 
             if n % commit_every == 0:
                 txn.commit()
                 txn = env.begin(write=True)
-                cursor = txn.cursor(db=layer_1_db)
-                print(f"\rlayer_1: {n:,} aliases…", end="", file=sys.stderr)
+                cursor = txn.cursor(db=alias_db)
+                print(f"\ralias: {n:,} aliases…", end="", file=sys.stderr)
 
         txn.commit()
     except BaseException:
@@ -191,7 +191,7 @@ def load_layer1(
         raise
 
     with env.begin(write=True) as txn:
-        txn.put(LAYER_1_BUILD_STATUS_KEY, BUILD_STATUS_COMPLETE, db=meta_db)
+        txn.put(ALIAS_BUILD_STATUS_KEY, BUILD_STATUS_COMPLETE, db=meta_db)
         txn.put(META_KEY_BUILD_STATUS, BUILD_STATUS_COMPLETE, db=meta_db)
         txn.put(META_KEY_LAST_UPDATED, now_iso().encode(), db=meta_db)
 
@@ -203,7 +203,7 @@ def load_layer1(
 def main() -> int:
     if len(sys.argv) < 2:
         print(
-            "usage: initialize_layer1_from_tsv.py <lmdb-path> [<sorted-2col-tsv>]",
+            "usage: initialize_alias_from_tsv.py <lmdb-path> [<sorted-2col-tsv>]",
             file=sys.stderr,
         )
         return 1
@@ -214,15 +214,15 @@ def main() -> int:
     try:
         if src_path is not None:
             with src_path.open("rb") as fh:
-                n, n_skipped_docs = load_layer1(fh, lmdb_path)
+                n, n_skipped_docs = load_alias(fh, lmdb_path)
         else:
-            n, n_skipped_docs = load_layer1(sys.stdin.buffer, lmdb_path)
+            n, n_skipped_docs = load_alias(sys.stdin.buffer, lmdb_path)
     except _Collision as exc:
-        print(f"\nlayer_1 build aborted: {exc}", file=sys.stderr)
+        print(f"\nalias build aborted: {exc}", file=sys.stderr)
         return 2
 
     print(
-        f"\nlayer_1: {n:,} aliases → {lmdb_path} "
+        f"\nalias: {n:,} aliases → {lmdb_path} "
         f"({n_skipped_docs:,} skipped; already in docs)",
         file=sys.stderr,
     )
