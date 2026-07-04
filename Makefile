@@ -51,7 +51,7 @@ cat_parts = find $(1) -name '*.tsv' -print0 | xargs -0 cat
 # ── Phony targets ─────────────────────────────────────────────────────────────
 .PHONY: default all install \
         backfile ingest-backfile backfile-core backfile-alias \
-        frontfile ingest-frontfile apply-frontfile \
+        frontfile ingest-frontfile apply-frontfile prune-aliases \
         ingest ingest-backfile ingest-frontfile update query show-meta clean distclean
 
 default: install
@@ -136,6 +136,14 @@ apply-frontfile: $(ALIAS_DONE) | install
 	@echo "$(FRONTFILE_SORTED): $$(wc -l < $(FRONTFILE_SORTED)) operations"
 	$(PYTHON) -m docdb_id.cli.apply_frontfile $(LMDB_OUT) $(FRONTFILE_SORTED) \
 	    $$(find $(FRONTFILE_PARTS) -name '*.tsv' -print)
+	$(MAKE) prune-aliases
+
+# Remove aliases whose target key no longer exists in the docs sub-DB and record
+# (via the alias_no_dangling meta key) that the alias DB is free of dangling
+# entries. A frontfile apply can create such orphans, so this runs after it; it
+# is also safe to invoke on its own.
+prune-aliases: | install
+	$(PYTHON) -m docdb_id.cli.alias_gc $(LMDB_OUT)
 
 
 # ── Ad-hoc lookups ────────────────────────────────────────────────────────────

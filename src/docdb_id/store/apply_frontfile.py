@@ -57,6 +57,7 @@ from docdb_id.store.schema import (
     FRONTFILE_APPLIED_PREFIX,
     META_DB_NAME,
     META_KEY_ALIAS_LAST_UPDATED,
+    META_KEY_ALIAS_NO_DANGLING,
     META_KEY_CORE_BUILD_STATUS,
     META_KEY_CORE_LAST_UPDATED,
     META_KEY_FRONTFILE_LAST_APPLIED,
@@ -238,6 +239,10 @@ def apply_changelog(
             marker_txn.put(META_KEY_CORE_BUILD_STATUS, BUILD_STATUS_COMPLETE, db=meta_db)
             marker_txn.put(META_KEY_CORE_LAST_UPDATED, applied_at, db=meta_db)
             marker_txn.put(META_KEY_ALIAS_LAST_UPDATED, applied_at, db=meta_db)
+            # A frontfile apply can leave aliases pointing at deleted keys, so the
+            # alias DB is no longer known to be free of dangling entries. Drop the
+            # assertion; `docdb_id.store.alias.prune_orphan_aliases` re-establishes it.
+            marker_txn.delete(META_KEY_ALIAS_NO_DANGLING, db=meta_db)
 
         env.sync(True)
     finally:

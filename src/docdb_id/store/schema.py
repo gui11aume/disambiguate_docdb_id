@@ -17,6 +17,12 @@ META_KEY_CORE_LAST_UPDATED = b"core_last_updated"
 META_KEY_ALIAS_BUILD_STATUS = b"alias_build_status"
 META_KEY_ALIAS_LAST_UPDATED = b"alias_last_updated"
 
+# Set (to the verification timestamp) when a prune pass has confirmed that every
+# alias points to an existing `docs` key. Deleted by any step that can introduce
+# dangling aliases (e.g. a frontfile apply), so its presence means "verified
+# clean" and its absence means "unknown / possibly dangling".
+META_KEY_ALIAS_NO_DANGLING = b"alias_no_dangling"
+
 META_KEY_FRONTFILE_LAST_APPLIED = b"frontfile_last_applied"
 FRONTFILE_APPLIED_PREFIX = b"frontfile_applied:"
 

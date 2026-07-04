@@ -41,6 +41,7 @@ from docdb_id.store.schema import (
     META_DB_NAME,
     META_KEY_ALIAS_BUILD_STATUS,
     META_KEY_ALIAS_LAST_UPDATED,
+    META_KEY_ALIAS_NO_DANGLING,
     now_iso,
 )
 
@@ -185,3 +186,87 @@ def load_alias(
     env.sync(True)
     env.close()
     return n, n_skipped_docs
+
+
+def prune_orphan_aliases(
+    lmdb_path: Path,
+    *,
+    map_size: int = DEFAULT_MAP_SIZE,
+    commit_every: int = DEFAULT_COMMIT_EVERY,
+) -> tuple[int, int]:
+    """Delete aliases whose target key no longer exists in the `docs` sub-DB.
+
+    Runs in two passes: a read-only scan collects the orphaned alias keys, then a
+    batched write pass deletes them. Splitting the work avoids mutating the alias
+    DB while iterating a cursor over it.
+
+    On success the `alias_no_dangling` meta key is set to the verification
+    timestamp; it is cleared at the start of the run so an interrupted prune does
+    not leave the database falsely marked clean.
+
+    Returns `(n_scanned, n_deleted)`.
+    """
+    if not lmdb_path.exists():
+        raise FileNotFoundError(f"{lmdb_path} does not exist; build the docs sub-DB first.")
+
+    env = lmdb.open(
+        str(lmdb_path),
+        map_size=map_size,
+        subdir=lmdb_path.is_dir(),
+        readonly=False,
+        meminit=False,
+        writemap=True,
+        map_async=True,
+        sync=False,
+        lock=True,
+        max_dbs=3,
+    )
+
+    alias_db = env.open_db(ALIAS_DB_NAME)
+    docs_db = env.open_db(DOCS_DB_NAME, create=False)
+    meta_db = env.open_db(META_DB_NAME)
+
+    try:
+        # Mark the alias DB as being rebuilt and drop any prior clean assertion:
+        # while the prune runs the database's dangling state is unknown.
+        with env.begin(write=True) as txn:
+            txn.put(META_KEY_ALIAS_BUILD_STATUS, BUILD_STATUS_IN_PROGRESS, db=meta_db)
+            txn.put(META_KEY_ALIAS_LAST_UPDATED, now_iso().encode(), db=meta_db)
+            txn.delete(META_KEY_ALIAS_NO_DANGLING, db=meta_db)
+
+        # Pass 1: read-only scan collecting alias keys whose target is gone.
+        orphans: list[bytes] = []
+        n_scanned = 0
+        with env.begin(write=False) as txn:
+            with txn.cursor(db=alias_db) as cursor:
+                for alias, key in cursor:
+                    n_scanned += 1
+                    if txn.get(key, db=docs_db) is None:
+                        orphans.append(alias)
+
+        # Pass 2: delete the collected orphans in committed batches.
+        n_deleted = 0
+        txn = env.begin(write=True)
+        try:
+            for i, alias in enumerate(orphans, start=1):
+                if txn.delete(alias, db=alias_db):
+                    n_deleted += 1
+                if i % commit_every == 0:
+                    txn.commit()
+                    txn = env.begin(write=True)
+                    print(f"\ralias prune: {i:,}/{len(orphans):,} removed...", end="", file=sys.stderr)
+            txn.commit()
+        except BaseException:
+            txn.abort()
+            raise
+
+        verified_at = now_iso().encode()
+        with env.begin(write=True) as txn:
+            txn.put(META_KEY_ALIAS_BUILD_STATUS, BUILD_STATUS_COMPLETE, db=meta_db)
+            txn.put(META_KEY_ALIAS_LAST_UPDATED, verified_at, db=meta_db)
+            txn.put(META_KEY_ALIAS_NO_DANGLING, verified_at, db=meta_db)
+
+        env.sync(True)
+    finally:
+        env.close()
+    return n_scanned, n_deleted
