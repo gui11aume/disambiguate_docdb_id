@@ -83,5 +83,10 @@ def main() -> None:
     mcp.run()
 
 
+def main_http() -> None:
+    """Run as a standalone HTTP server (for hosted deployment)."""
+    mcp.run(transport="streamable-http", host="0.0.0.0", port=8001)
+
+
 if __name__ == "__main__":
     main()

@@ -9,6 +9,15 @@ services:
     expose:
       - "8000"
 
+  mcp:
+    build: .
+    restart: unless-stopped
+    environment:
+      DOCDB_API_URL: http://api:8000
+    expose:
+      - "8001"
+    command: ["uv", "run", "docdb-mcp-http"]
+
   nginx:
     image: nginx:alpine
     restart: unless-stopped
@@ -20,6 +29,7 @@ services:
       - /etc/letsencrypt:/etc/letsencrypt:ro
     depends_on:
       - api
+      - mcp
 
 volumes:
   lmdb_data:
