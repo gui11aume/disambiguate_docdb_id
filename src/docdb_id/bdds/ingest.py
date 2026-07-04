@@ -274,7 +274,7 @@ def _handle_frontfile_item(
     skip_download_if_complete: bool,
 ) -> WorkResult:
     """One outer delivery part -> one `part_<stem>.tsv`; the TSV is the resume key."""
-    part_path = out_dir / f"part_{item.key}.tsv"
+    part_path = _frontfile_part_path(out_dir, item.key)
     if part_path.exists():
         return WorkResult(item.key, skipped=True)
 
@@ -420,7 +420,7 @@ def _build_online_items(
             deliveries[0].get("deliveryName", ""),
             len(items),
         )
-    else:
+    elif config.parser_kind != "frontfile":
         logger.info("%d part(s) across %d delivery(s)", len(items), len(deliveries))
 
     return items
@@ -438,6 +438,16 @@ def _build_offline_items(inputs: list[Path], config: IngestConfig) -> list[WorkI
         )
         for idx, path in enumerate(paths)
     ]
+
+
+def _frontfile_part_path(out_dir: Path, key: str) -> Path:
+    return out_dir / f"part_{key}.tsv"
+
+
+def _partition_frontfile_items(items: list[WorkItem], out_dir: Path) -> tuple[list[WorkItem], int]:
+    """Split catalog items into pending work and a count of already-ingested parts."""
+    pending = [item for item in items if not _frontfile_part_path(out_dir, item.key).exists()]
+    return pending, len(items) - len(pending)
 
 
 # ── Public entry point ───────────────────────────────────────────────────────
@@ -468,13 +478,47 @@ def run(config: IngestConfig) -> int:
         return 1
 
     label = "backfile" if config.parser_kind == "backfile" else "frontfile"
-    logger.info(
-        "ingesting %d container(s): %d parse worker(s), %d in flight -> %s",
-        len(items),
-        config.workers,
-        config.in_flight,
-        config.out_dir,
-    )
+    work_items = items
+    skipped_upfront = 0
+    if config.parser_kind == "frontfile":
+        work_items, skipped_upfront = _partition_frontfile_items(items, config.out_dir)
+        if online and config.delivery_mode == "all":
+            n_deliveries = len({item.delivery_id for item in items if item.delivery_id is not None})
+            logger.info(
+                "catalog: %d part(s) across %d delivery(s); %d already ingested, %d pending",
+                len(items),
+                n_deliveries,
+                skipped_upfront,
+                len(work_items),
+            )
+        else:
+            logger.info(
+                "catalog: %d part(s); %d already ingested, %d pending",
+                len(items),
+                skipped_upfront,
+                len(work_items),
+            )
+        if not work_items:
+            logger.info("nothing to do")
+            return 0
+
+    if config.parser_kind == "frontfile" and skipped_upfront:
+        logger.info(
+            "ingesting %d pending part(s) (%d already ingested): %d parse worker(s), %d in flight -> %s",
+            len(work_items),
+            skipped_upfront,
+            config.workers,
+            config.in_flight,
+            config.out_dir,
+        )
+    else:
+        logger.info(
+            "ingesting %d container(s): %d parse worker(s), %d in flight -> %s",
+            len(work_items),
+            config.workers,
+            config.in_flight,
+            config.out_dir,
+        )
 
     delete_source = online and config.delete_after_parse
     handle = functools.partial(
@@ -495,8 +539,8 @@ def run(config: IngestConfig) -> int:
         bound = functools.partial(handle, parse_pool=parse_pool)
         with ThreadPoolExecutor(max_workers=config.in_flight) as coordinators:
             for result in tqdm(
-                coordinators.map(bound, items),
-                total=len(items),
+                coordinators.map(bound, work_items),
+                total=len(work_items),
                 unit="zip",
                 desc=label,
             ):
@@ -508,5 +552,6 @@ def run(config: IngestConfig) -> int:
                     logger.warning("warning: %s", err)
                     errors += 1
 
+    skipped += skipped_upfront
     logger.info("done: %d processed, %d skipped, %d error(s)", processed, skipped, errors)
     return 0 if errors == 0 else 1
