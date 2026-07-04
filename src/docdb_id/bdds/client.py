@@ -1,7 +1,7 @@
 """Minimal client for the EPO Bulk Data Distribution Service.
 
-Wraps the four endpoints used by patent-dev/epo-bdds, ported to Python with
-no extra runtime dependency beyond `tqdm` (already a project dep):
+Wraps the endpoints used to enumerate and download DOCDB deliveries, ported to
+Python with no extra runtime dependency beyond `tqdm` (already a project dep):
 
     POST   https://login.epo.org/oauth2/.../v1/token            (OAuth2 password)
     GET    .../api/products/                                    (list products)
@@ -13,7 +13,7 @@ returned bearer token is valid for 1 hour and is refreshed automatically.
 
 The EPO download endpoint does **not** honour HTTP `Range` requests: it
 ignores the header and returns the full body with status 200. We therefore
-never attempt to resume — every file is fetched from byte 0 on every run.
+never attempt to resume - every file is fetched from byte 0 on every run.
 
 Credentials must be supplied via environment variables:
 
@@ -37,7 +37,7 @@ from typing import Any
 
 from tqdm import tqdm
 
-logger = logging.getLogger("bdds_client")
+logger = logging.getLogger("docdb_id.bdds.client")
 
 # ── Endpoints and the EPO-specific OAuth client ──────────────────────────────
 
@@ -156,8 +156,8 @@ class BddsClient:
                     return json.loads(resp.read().decode("utf-8"))
             except urllib.error.HTTPError as exc:
                 last_exc = exc
-                # Re-auth once on 401: a server-side token revocation can
-                # land before our local expiry catches up.
+                # Re-auth once on 401: a server-side token revocation can land
+                # before our local expiry catches up.
                 if exc.code == 401 and attempt == 0:
                     self._invalidate_token()
                     continue
@@ -202,12 +202,12 @@ class BddsClient:
         """Stream one delivery file to `dst`. Always starts from byte 0.
 
         The EPO download endpoint ignores `Range` requests, so resuming a
-        partially-downloaded file is not possible — every invocation pulls
-        the full body and truncates the target.
+        partially-downloaded file is not possible - every invocation pulls the
+        full body and truncates the target.
 
-        The body is streamed to a sibling `*.part` file and renamed onto `dst`
-        only after the full transfer succeeds, so an interrupted download never
-        leaves a truncated file at the final path.
+        The body is streamed to a sibling `*.part` file and renamed onto
+        `dst` only after the full transfer succeeds, so an interrupted
+        download never leaves a truncated file at the final path.
         """
         url = f"{API_BASE}/products/{product_id}/delivery/{delivery_id}/file/{file_id}/download"
         part = dst.with_name(dst.name + PART_SUFFIX)
@@ -236,7 +236,7 @@ class BddsClient:
                     _sleep_backoff(attempt, reason=str(exc.reason))
                     continue
                 raise BddsError(f"download {dst.name} failed: {exc.reason}") from exc
-        _unlink_quietly(part)
+        unlink_quietly(part)
         raise BddsError(f"download {dst.name} failed after {MAX_RETRIES} attempts: {last_exc}")
 
 
@@ -292,7 +292,8 @@ def _expected_file_size(file_meta: dict[str, Any]) -> int | None:
     return None
 
 
-def _unlink_quietly(path: Path) -> None:
+def unlink_quietly(path: Path) -> None:
+    """Remove `path` if present, swallowing missing-file and OS errors."""
     try:
         path.unlink()
     except FileNotFoundError:
@@ -316,7 +317,8 @@ def _zip_is_valid(path: Path) -> bool:
         return False
 
 
-def _file_is_complete(dst: Path, file_meta: dict[str, Any]) -> bool:
+def file_is_complete(dst: Path, file_meta: dict[str, Any]) -> bool:
+    """Return True if `dst` already holds the fully-downloaded delivery file."""
     if not dst.exists():
         return False
     expected_size = _expected_file_size(file_meta)
@@ -346,102 +348,3 @@ def credentials_from_env() -> tuple[str, str]:
     except UnicodeEncodeError:
         logger.warning("EPO_BDDS_PASSWORD contains non-ASCII characters; authentication may fail")
     return username, password
-
-
-def download_latest_delivery(product_id: int, out_dir: Path) -> int:
-    """Download every file of the latest delivery of `product_id` into `out_dir`.
-
-    Returns 0 on full success, 1 if at least one file failed. The output
-    directory is created if absent. Each file is written from byte 0; if a
-    file with the same name already exists in `out_dir` it is overwritten.
-    """
-    username, password = credentials_from_env()
-    client = BddsClient(username, password)
-
-    delivery = client.latest_delivery(product_id)
-    files = delivery.get("files") or []
-    out_dir.mkdir(parents=True, exist_ok=True)
-    logger.info(
-        "downloading product %d delivery %d (%s): %d file(s) → %s",
-        product_id,
-        delivery["deliveryId"],
-        delivery.get("deliveryName", ""),
-        len(files),
-        out_dir,
-    )
-
-    errors = 0
-    for f in files:
-        dst = out_dir / f["fileName"]
-        try:
-            client.download_file(product_id, delivery["deliveryId"], f["fileId"], dst)
-        except BddsError as exc:
-            logger.error("download failed for %s: %s", f["fileName"], exc)
-            errors += 1
-
-    if errors:
-        logger.error("finished with %d error(s)", errors)
-        return 1
-    logger.info("done")
-    return 0
-
-
-def download_all_deliveries(product_id: int, out_dir: Path) -> int:
-    """Download missing files from every delivery of `product_id` into `out_dir`.
-
-    Existing files are skipped when they are present and, if the API advertises
-    a byte size, their local size matches. Truncated files are downloaded again
-    from byte 0 because the EPO endpoint does not support HTTP Range requests.
-    """
-    username, password = credentials_from_env()
-    client = BddsClient(username, password)
-
-    deliveries = client.all_deliveries(product_id)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    total_files = sum(len(delivery.get("files") or []) for delivery in deliveries)
-    logger.info(
-        "checking product %d: %d delivery(s), %d file(s) → %s",
-        product_id,
-        len(deliveries),
-        total_files,
-        out_dir,
-    )
-
-    fetched = 0
-    skipped = 0
-    errors = 0
-    for delivery in deliveries:
-        files = delivery.get("files") or []
-        delivery_fetched = 0
-        delivery_skipped = 0
-        logger.info(
-            "checking delivery %d (%s): %d file(s)",
-            delivery["deliveryId"],
-            delivery.get("deliveryName", ""),
-            len(files),
-        )
-        for f in files:
-            dst = out_dir / f["fileName"]
-            if _file_is_complete(dst, f):
-                skipped += 1
-                delivery_skipped += 1
-                continue
-            try:
-                client.download_file(product_id, delivery["deliveryId"], f["fileId"], dst)
-                fetched += 1
-                delivery_fetched += 1
-            except BddsError as exc:
-                logger.error("download failed for %s: %s", f["fileName"], exc)
-                errors += 1
-        logger.info(
-            "delivery %d complete: fetched %d, skipped %d",
-            delivery["deliveryId"],
-            delivery_fetched,
-            delivery_skipped,
-        )
-
-    if errors:
-        logger.error("finished with %d error(s); fetched %d, skipped %d", errors, fetched, skipped)
-        return 1
-    logger.info("done: fetched %d, skipped %d", fetched, skipped)
-    return 0

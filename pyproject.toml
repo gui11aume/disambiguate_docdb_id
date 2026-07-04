@@ -1,3 +1,7 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "disambiguate-docdb-id"
 version = "0.1.0"
@@ -12,16 +16,27 @@ dependencies = [
     "lmdb>=2.2.0",
     "msgpack>=1.1.0,<2",
     "lxml>=6.1.1",
+    "ruff==0.15.2",
+    "pytest>=9.0.0",
 ]
 
-[project.optional-dependencies]
-dev = [
-    "ruff==0.15.2",
-]
+[project.scripts]
+docdb-backfile = "docdb_id.cli.backfile:main"
+docdb-frontfile = "docdb_id.cli.frontfile:main"
+docdb-core = "docdb_id.cli.core:main"
+docdb-alias-extract = "docdb_id.cli.alias_extract:main"
+docdb-alias-load = "docdb_id.cli.alias_load:main"
+docdb-apply-frontfile = "docdb_id.cli.apply_frontfile:main"
+docdb-query = "docdb_id.cli.query:main"
+docdb-show-meta = "docdb_id.cli.show_meta:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/docdb_id"]
 
 [tool.ruff]
 target-version = "py310"
 line-length = 120
+src = ["src"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]

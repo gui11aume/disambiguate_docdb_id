@@ -1,43 +1,38 @@
-#!/usr/bin/env python3
 """Look up DOCDB candidate IDs in an LMDB.
 
 Input lines (TSV):
-    <free text>\\t"<CC><doc-number><kind>"
+    <free text>\t"<CC><doc-number><kind>"
 
-For each line we take the quoted candidate ID from the second column, strip
-the quotes, drop the trailing kind code (one letter + optional digit), strip
-any leading zeros from the doc-number, and query the LMDB ``docs`` DB.
+For each line we take the quoted candidate ID from the second column, strip the
+quotes, drop the trailing kind code (one letter + optional digit), strip any
+leading zeros from the doc-number, and query the LMDB `docs` DB.
 
 Lookup is two-tiered:
 
-1. Try the normalised candidate as a key in the ``docs`` sub-DB. If a
-   record list comes back, emit it.
-2. Otherwise, try the same key in the ``alias`` sub-DB. A hit
-   there yields the canonical primary key, which we then probe in
-   ``docs`` to recover the record list. This rescues records whose
-   canonical key derives from the office's exchange-document number
-   while the input candidate carried the office-native original number
-   (e.g. AP/AM/EP-style IDs, or originals with non-standard formatting).
+1. Try the normalised candidate as a key in the `docs` sub-DB. If a record
+   list comes back, emit it.
+2. Otherwise, try the same key in the `alias` sub-DB. A hit there yields the
+   canonical primary key, which we then probe in `docs` to recover the record
+   list. This rescues records whose canonical key derives from the office's
+   exchange-document number while the input candidate carried the office-native
+   original number.
 
 Output lines (TSV):
-    <free text>\\t<quoted candidate>\\t<JSON record list or empty array>
-
-Usage:
-    query_lmdb.py <lmdb> [<input>]      # input defaults to stdin
+    <free text>\t<quoted candidate>\t<JSON record list or empty array>
 """
 
 from __future__ import annotations
 
 import json
 import re
-import sys
 from pathlib import Path
+from typing import IO
 
 import lmdb
 import msgpack
 
-DOCS_DB_NAME = b"docs"
-ALIAS_DB_NAME = b"alias"
+from docdb_id.store.schema import ALIAS_DB_NAME, DOCS_DB_NAME
+
 KIND_RE = re.compile(r"[A-Z]\d?$")
 
 
@@ -51,14 +46,8 @@ def normalize(candidate: str) -> str:
     return cc + (num.lstrip("0") or "0")
 
 
-def main() -> int:
-    if len(sys.argv) < 2:
-        print("usage: query_lmdb.py <lmdb> [<input>]", file=sys.stderr)
-        return 1
-
-    lmdb_path = Path(sys.argv[1])
-    src = open(sys.argv[2]) if len(sys.argv) > 2 else sys.stdin
-
+def run_query(lmdb_path: Path, src: IO[str], out: IO[str]) -> None:
+    """Resolve each input line against the LMDB and write JSON record lists to *out*."""
     env = lmdb.open(
         str(lmdb_path),
         readonly=True,
@@ -68,9 +57,8 @@ def main() -> int:
         max_dbs=3,
     )
     docs_db = env.open_db(DOCS_DB_NAME)
-    # Older LMDB envs built before the alias stage existed will not
-    # have this sub-DB; treat that as "no aliases known" rather than
-    # a fatal error.
+    # Older LMDB envs built before the alias stage existed will not have this
+    # sub-DB; treat that as "no aliases known" rather than a fatal error.
     try:
         alias_db = env.open_db(ALIAS_DB_NAME)
     except lmdb.NotFoundError:
@@ -96,11 +84,6 @@ def main() -> int:
                 if blob is None and len(key) == 11:
                     blob = txn.get(key[:6] + b"0" + key[6:], db=docs_db)
                 records = msgpack.unpackb(blob, raw=False) if blob is not None else []
-                print(f"{left}\t{right}\t{json.dumps(records, ensure_ascii=False)}")
+                print(f"{left}\t{right}\t{json.dumps(records, ensure_ascii=False)}", file=out)
     finally:
         env.close()
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
