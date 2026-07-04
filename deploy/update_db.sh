@@ -6,6 +6,9 @@
 # Rollback: tar xf /srv/docdb/docdb-<date>.tar.gz -C /srv/docdb
 set -euo pipefail
 
+# shellcheck source=/dev/null
+source /etc/docdb/credentials
+
 SERVE_DIR="/srv/docdb"
 LMDB_PATH="$SERVE_DIR/docdb.lmdb"
 TIMESTAMP=$(date +%Y%m%d)
