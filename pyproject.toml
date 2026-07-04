@@ -11,6 +11,7 @@ dependencies = [
     "tqdm>=4.67.1,<5",
     "lmdb>=2.2.0",
     "msgpack>=1.1.0,<2",
+    "lxml>=6.1.1",
 ]
 
 [project.optional-dependencies]
