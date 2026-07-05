@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from pathlib import Path
 
 import lmdb
@@ -119,3 +121,41 @@ def test_batch_too_many_items(client: TestClient):
     items = [{"cc": "US", "number": "1234567"}] * 10_001
     resp = client.post("/batch", json={"items": items})
     assert resp.status_code == 422
+
+
+def test_query_survives_external_growth_past_default_map_size(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Regression test for MDB_MAP_RESIZED: the api's LMDB env is opened once
+    at process startup and held open. If it doesn't reserve a map_size big
+    enough upfront, a separate writer process growing the DB afterwards
+    (e.g. `make apply-frontfile` on the host) breaks every subsequent read
+    until the api process restarts."""
+    lmdb_path = tmp_path / "test.lmdb"
+    _seed(lmdb_path)
+    monkeypatch.setenv("DOCDB_LMDB_PATH", str(lmdb_path))
+
+    with TestClient(app) as client:
+        resp = client.get("/query", params={"cc": "US", "number": "8000000"})
+        assert resp.status_code == 200
+
+        # Simulate a separate writer process (e.g. `make apply-frontfile` on
+        # the host) growing the DB well past LMDB's small default reader
+        # reservation, while this client's env stays open. Must be a real
+        # subprocess: python-lmdb refuses to open the same path twice
+        # in-process, which would mask the actual multi-process bug.
+        writer_script = (
+            "import lmdb\n"
+            f"env = lmdb.open({str(lmdb_path)!r}, map_size=200 * 1024 * 1024, subdir=True, max_dbs=3)\n"
+            "db = env.open_db(b'docs')\n"
+            "record = b'x' * 200\n"
+            "with env.begin(write=True) as txn:\n"
+            "    for i in range(200_000):\n"
+            "        txn.put(f'GROWTH{i}'.encode(), record, db=db)\n"
+            "env.close()\n"
+        )
+        subprocess.run([sys.executable, "-c", writer_script], check=True)
+
+        resp = client.get("/query", params={"cc": "US", "number": "8000000"})
+        assert resp.status_code == 200
+        assert resp.json()[0]["docdb_id"] == "US8000000B2"

@@ -17,6 +17,7 @@ from docdb_id.country_codes import VALID_CC
 from docdb_id.store.query import lookup_one
 from docdb_id.store.schema import (
     ALIAS_DB_NAME,
+    DEFAULT_MAP_SIZE,
     DOCS_DB_NAME,
     META_DB_NAME,
     META_KEY_CORE_LAST_UPDATED,
@@ -31,8 +32,17 @@ MAX_BATCH = 10_000
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     lmdb_path = Path(os.environ["DOCDB_LMDB_PATH"])
+    # This env is opened once and held for the process lifetime, unlike every
+    # other (short-lived, one-shot) reader in this codebase. Without an
+    # explicit map_size, LMDB defaults readers to a small reservation that
+    # only covers the DB's size at open time; a `make apply-frontfile` run on
+    # the host growing the DB afterwards then makes every subsequent read
+    # fail with MDB_MAP_RESIZED until this process restarts. Matching the
+    # writers' DEFAULT_MAP_SIZE upfront avoids that: it's a virtual address
+    # space reservation, not real disk usage, so requesting it eagerly is free.
     env = lmdb.open(
         str(lmdb_path),
+        map_size=DEFAULT_MAP_SIZE,
         readonly=True,
         subdir=lmdb_path.is_dir(),
         lock=False,
