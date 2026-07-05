@@ -108,8 +108,35 @@ def _validate_number(number: str) -> str | None:
     return None
 
 
+# Known-stable canary record queried by /health. A plain "process is up" check
+# would have stayed green through the MDB_MAP_RESIZED incident, since it never
+# touched the LMDB env; querying a fixed, real docdb_id catches that class of
+# failure instead of just reporting the process as alive.
+HEALTH_CHECK_CC = "US"
+HEALTH_CHECK_NUMBER = "8000000"
+HEALTH_CHECK_DOCDB_ID = "US8000000B2"
+
+
 @app.get("/health")
 async def health() -> dict:
+    env = app.state.env
+    docs_db = app.state.docs_db
+    alias_db = app.state.alias_db
+
+    def _sync() -> list[dict]:
+        with env.begin(write=False) as txn:
+            return lookup_one(txn, docs_db, alias_db, HEALTH_CHECK_CC, HEALTH_CHECK_NUMBER)
+
+    try:
+        records = await anyio.to_thread.run_sync(_sync)
+    except lmdb.Error as exc:
+        raise HTTPException(status_code=503, detail=f"lmdb error: {exc}") from exc
+
+    if not any(r["docdb_id"] == HEALTH_CHECK_DOCDB_ID for r in records):
+        raise HTTPException(
+            status_code=503,
+            detail=f"expected {HEALTH_CHECK_DOCDB_ID} for {HEALTH_CHECK_CC}{HEALTH_CHECK_NUMBER}, got {records}",
+        )
     return {"status": "ok"}
 
 

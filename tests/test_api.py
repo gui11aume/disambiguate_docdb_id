@@ -52,6 +52,22 @@ def test_health(client: TestClient):
     assert resp.json() == {"status": "ok"}
 
 
+def test_health_fails_when_canary_record_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    lmdb_path = tmp_path / "test.lmdb"
+    lmdb_path.mkdir(parents=True, exist_ok=True)
+    env = lmdb.open(str(lmdb_path), map_size=64 * 1024 * 1024, subdir=True, max_dbs=3)
+    env.open_db(DOCS_DB_NAME)
+    env.open_db(ALIAS_DB_NAME)
+    env.open_db(META_DB_NAME)
+    env.close()
+    monkeypatch.setenv("DOCDB_LMDB_PATH", str(lmdb_path))
+
+    with TestClient(app) as client:
+        resp = client.get("/health")
+        assert resp.status_code == 503
+        assert "US8000000B2" in resp.json()["detail"]
+
+
 def test_stats(client: TestClient):
     resp = client.get("/stats")
     assert resp.status_code == 200
