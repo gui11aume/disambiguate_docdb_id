@@ -6,6 +6,10 @@
 # Rollback: tar xf /srv/docdb/docdb-<date>.tar.gz -C /srv/docdb
 set -euo pipefail
 
+# cron (like any non-interactive ssh invocation) never sources ~/.bashrc, so
+# uv - installed at /root/.local/bin/uv - would otherwise be invisible here.
+export PATH="/root/.local/bin:$PATH"
+
 # shellcheck source=/dev/null
 source /etc/docdb/credentials
 
@@ -16,7 +20,12 @@ NEW_ARCHIVE="$SERVE_DIR/docdb-$TIMESTAMP.tar.gz"
 KEEP_ARCHIVES=1
 
 echo "[update_db] applying frontfile to $LMDB_PATH..."
-docker compose -f /opt/docdb/docker-compose.yml exec -T api uv run docdb-apply-frontfile --lmdb /data/docdb.lmdb
+# Runs on the host, not inside the api container: the api service mounts its
+# LMDB volume read-only (docker-compose.yml), and docdb-apply-frontfile is
+# only the last step of the pipeline anyway (download + sort still need to
+# happen first). `make apply-frontfile` drives the whole thing and refuses
+# to touch the backfile chain if the alias DB isn't already loaded.
+make -C /opt/docdb apply-frontfile LMDB_OUT="$LMDB_PATH"
 echo "[update_db] frontfile applied"
 
 echo "[update_db] streaming backup → $NEW_ARCHIVE..."
@@ -30,4 +39,4 @@ find "$SERVE_DIR" -maxdepth 1 -name "docdb-*.tar.gz" \
 echo "[update_db] old archives pruned (kept $KEEP_ARCHIVES)"
 
 echo "[update_db] done"
-curl -fsS "$HEALTHCHECKS_URL" > /dev/null
+curl -fsS -m 10 --retry 5 -o /dev/null "$HEALTHCHECKS_URL"
