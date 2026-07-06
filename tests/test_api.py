@@ -52,6 +52,14 @@ def test_health(client: TestClient):
     assert resp.json() == {"status": "ok"}
 
 
+def test_health_head_request(client: TestClient):
+    """Uptime monitors/load balancers commonly probe with HEAD rather than
+    GET; FastAPI does not add HEAD support to a route automatically."""
+    resp = client.request("HEAD", "/health")
+    assert resp.status_code == 200
+    assert resp.content == b""
+
+
 def test_health_fails_when_canary_record_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     lmdb_path = tmp_path / "test.lmdb"
     lmdb_path.mkdir(parents=True, exist_ok=True)

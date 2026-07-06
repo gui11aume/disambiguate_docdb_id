@@ -117,7 +117,7 @@ HEALTH_CHECK_NUMBER = "8000000"
 HEALTH_CHECK_DOCDB_ID = "US8000000B2"
 
 
-@app.get("/health")
+@app.api_route("/health", methods=["GET", "HEAD"])
 async def health() -> dict:
     env = app.state.env
     docs_db = app.state.docs_db
