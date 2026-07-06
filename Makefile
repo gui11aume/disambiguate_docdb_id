@@ -177,7 +177,7 @@ show-meta:
 # ── Deployment ────────────────────────────────────────────────────────────────
 COMPOSE ?= docker compose -f /opt/docdb/docker-compose.yml
 
-.PHONY: up down restart reload logs ps
+.PHONY: up down restart redeploy reload logs ps
 
 up:
 	$(COMPOSE) up -d --build
@@ -187,6 +187,11 @@ down:
 
 restart:
 	$(COMPOSE) restart $(SERVICE)
+
+# Always reload nginx to get the new IP on the Docker bridge network.
+redeploy:
+	$(COMPOSE) up -d --build $(SERVICE)
+	$(MAKE) reload
 
 reload:
 	$(COMPOSE) exec nginx nginx -s reload
