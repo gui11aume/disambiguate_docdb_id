@@ -148,9 +148,11 @@ def run(user_message: str, system_prompt: str | None = None) -> str:
             return msg.content
 
         for tc in msg.tool_calls:
-            logger.debug("tool call: %s(%s)", tc.function.name, tc.function.arguments)
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug("tool call: %s(%s)", tc.function.name, tc.function.arguments)
             result = _dispatch_tool(tc.function.name, tc.function.arguments)
-            logger.debug("tool result: %s", result)
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug("tool result: %s", result)
             messages.append({
                 "role": "tool",
                 "tool_call_id": tc.id,

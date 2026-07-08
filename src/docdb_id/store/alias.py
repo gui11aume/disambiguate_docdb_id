@@ -31,8 +31,6 @@ from pathlib import Path
 
 import lmdb
 
-logger = logging.getLogger("docdb_id.store.alias")
-
 from docdb_id.store.schema import (
     ALIAS_DB_NAME,
     BUILD_STATUS_COMPLETE,
@@ -46,6 +44,8 @@ from docdb_id.store.schema import (
     META_KEY_ALIAS_NO_DANGLING,
     now_iso,
 )
+
+logger = logging.getLogger("docdb_id.store.alias")
 
 
 class _Collision(Exception):

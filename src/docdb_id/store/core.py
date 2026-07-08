@@ -17,8 +17,6 @@ import logging
 import shutil
 from pathlib import Path
 
-logger = logging.getLogger("docdb_id.store.core")
-
 import lmdb
 import msgpack
 
@@ -33,6 +31,8 @@ from docdb_id.store.schema import (
     META_KEY_CORE_LAST_UPDATED,
     now_iso,
 )
+
+logger = logging.getLogger("docdb_id.store.core")
 
 
 def load_from_tsv(

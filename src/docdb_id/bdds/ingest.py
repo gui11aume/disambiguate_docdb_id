@@ -128,7 +128,7 @@ def expand_nested_zip(container_path: Path, work_dir: Path) -> tuple[list[Path],
     try:
         with zipfile.ZipFile(container_path) as zf:
             zf.extractall(work_dir)
-    except (zipfile.BadZipFile, OSError) as exc:
+    except (zipfile.BadZipFile, FileNotFoundError, PermissionError) as exc:
         return [], [f"expand {container_path.name}: {exc}"]
 
     xml_dir = work_dir / "_xml"
@@ -144,7 +144,7 @@ def expand_nested_zip(container_path: Path, work_dir: Path) -> tuple[list[Path],
                     with zf.open(member) as src, target.open("wb") as dst:
                         shutil.copyfileobj(src, dst, length=_CHUNK)
                     xml_paths.append(target)
-        except (zipfile.BadZipFile, OSError) as exc:
+        except (zipfile.BadZipFile, PermissionError) as exc:
             errors.append(f"{inner_zip.name}: {exc}")
         finally:
             unlink_quietly(inner_zip)

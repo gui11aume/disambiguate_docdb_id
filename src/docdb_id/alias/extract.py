@@ -33,12 +33,12 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Iterator
-
-logger = logging.getLogger("docdb_id.alias.extract")
 from dataclasses import dataclass
 from datetime import date
 
 from docdb_id.normalize import processed_doc_number
+
+logger = logging.getLogger("docdb_id.alias.extract")
 
 BRAZIL_C_RE = re.compile(rb"^C[0-9]+$")
 BRAZIL_PI_RE = re.compile(rb"^PI[0-9]+$")
