@@ -2,17 +2,15 @@
 
 from __future__ import annotations
 
-import io
 from lxml import etree as LET
 
 from docdb_id.parse.docdb_target import (
+    _SEQ_FILE_WIDTH,
+    _SEQ_POS_WIDTH,
     BackfileTarget,
     FrontfileTarget,
     make_key,
-    _SEQ_FILE_WIDTH,
-    _SEQ_POS_WIDTH,
 )
-
 
 # ── make_key ────────────────────────────────────────────────────────────────────
 

@@ -65,7 +65,7 @@ all: apply-backfile apply-frontfile
 # ── Development ────────────────────────────────────────────────────────────────
 # `uv sync --frozen` installs the package and locked dependencies verbatim.
 install:
-	$(UV) sync --frozen
+	$(UV) sync --frozen --extra dev
 
 lint:
 	$(UV) run ruff check
