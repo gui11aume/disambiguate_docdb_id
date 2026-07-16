@@ -53,7 +53,7 @@ SHELL       := /bin/bash
 cat_parts = find $(1) -name '*.tsv' -print0 | xargs -0 cat
 
 # ── Phony targets ─────────────────────────────────────────────────────────────
-.PHONY: default all install \
+.PHONY: default all install lint test \
         backfile ingest-backfile backfile-core backfile-alias \
         frontfile ingest-frontfile apply-frontfile prune-aliases \
         ingest ingest-backfile ingest-frontfile update query show-meta clean distclean
@@ -62,10 +62,16 @@ default: install
 all: apply-backfile apply-frontfile
 
 
-# ── Environment ───────────────────────────────────────────────────────────────
+# ── Development ────────────────────────────────────────────────────────────────
 # `uv sync --frozen` installs the package and locked dependencies verbatim.
 install:
 	$(UV) sync --frozen
+
+lint:
+	$(UV) run ruff check
+
+test:
+	$(UV) run pytest tests/ -q
 
 
 # ── Backfile pipeline (full snapshot) ─────────────────────────────────────────

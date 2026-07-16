@@ -20,6 +20,15 @@ from docdb_id.store.core import load_from_tsv
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Load a sorted backfile TSV into the LMDB `docs` sub-DB.
+
+    Args:
+        argv: Command-line argument list. First element is the LMDB path; optional
+            second element is a path to a pre-sorted TSV file (reads stdin if omitted).
+
+    Returns:
+        Exit code (0 on success, 1 on usage error).
+    """
     argv = sys.argv[1:] if argv is None else argv
     if len(argv) < 1:
         print("usage: python -m docdb_id.cli.core <lmdb-path> [<sorted-tsv>]", file=sys.stderr)

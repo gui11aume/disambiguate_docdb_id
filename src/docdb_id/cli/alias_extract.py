@@ -19,6 +19,15 @@ from docdb_id.alias.extract import emit
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Project a 6-column backfile TSV down to a 3-column alias input.
+
+    Args:
+        argv: Command-line argument list. Optional first element is an input TSV
+            file path (reads stdin if omitted).
+
+    Returns:
+        Exit code (0 on success, 2 on usage error).
+    """
     argv = sys.argv[1:] if argv is None else argv
     if len(argv) > 1:
         print("usage: python -m docdb_id.cli.alias_extract [<input.tsv>]", file=sys.stderr)

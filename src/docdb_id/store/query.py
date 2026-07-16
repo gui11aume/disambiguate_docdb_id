@@ -37,7 +37,15 @@ KIND_RE = re.compile(r"[A-Z]\d?$")
 
 
 def normalize(candidate: str) -> str:
-    """Strip quotes, kind code, and leading zeros from the doc-number."""
+    """Strip quotes, kind code, and leading zeros from the doc-number.
+
+    Args:
+        candidate: Raw candidate string, possibly with surrounding quotes and
+            a trailing kind code (letter + optional digit).
+
+    Returns:
+        Normalised key string consisting of country code + doc-number.
+    """
     s = candidate.strip().strip('"')
     s = KIND_RE.sub("", s)
     if len(s) <= 2:
@@ -52,7 +60,17 @@ def _fetch_blob(
     alias_db: object | None,
     key: bytes,
 ) -> bytes | None:
-    """Run the two-tier + padding probes and return the raw msgpack blob or None."""
+    """Run the two-tier + padding probes and return the raw msgpack blob or None.
+
+    Args:
+        txn: Open LMDB read transaction.
+        docs_db: Handle for the docs sub-DB.
+        alias_db: Handle for the alias sub-DB, or None if not present.
+        key: Binary key to look up.
+
+    Returns:
+        Raw msgpack blob from the docs sub-DB, or None if not found.
+    """
     blob = txn.get(key, db=docs_db)
     if blob is None and alias_db is not None:
         primary = txn.get(key, db=alias_db)
@@ -96,7 +114,13 @@ def lookup_one(
 
 
 def run_query(lmdb_path: Path, src: IO[str], out: IO[str]) -> None:
-    """Resolve each input line against the LMDB and write JSON record lists to *out*."""
+    """Resolve each input line against the LMDB and write JSON record lists to *out*.
+
+    Args:
+        lmdb_path: Path to the existing LMDB directory.
+        src: Input text stream (TSV with free text and quoted candidate ID).
+        out: Output text stream for JSON result lines.
+    """
     env = lmdb.open(
         str(lmdb_path),
         readonly=True,

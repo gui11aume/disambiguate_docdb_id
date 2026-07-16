@@ -35,6 +35,14 @@ BACKFILE_PRODUCT_ID = 14
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Run the backfile ingest pipeline.
+
+    Args:
+        argv: Command-line argument list (defaults to sys.argv[1:]).
+
+    Returns:
+        Exit code (0 on success).
+    """
     ap = argparse.ArgumentParser(
         prog="docdb_id.cli.backfile",
         description=__doc__,

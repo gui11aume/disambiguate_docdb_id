@@ -39,6 +39,14 @@ FRONTFILE_PRODUCT_ID = 3
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Run the frontfile ingest pipeline.
+
+    Args:
+        argv: Command-line argument list (defaults to sys.argv[1:]).
+
+    Returns:
+        Exit code (0 on success).
+    """
     ap = argparse.ArgumentParser(
         prog="docdb_id.cli.frontfile",
         description=__doc__,

@@ -6,7 +6,7 @@ The main TSV has columns:
 
 For every row we form the candidate identifier `key[:2] + orig_doc_number` -
 i.e. the row's country code prepended to the office's native publication number
-- and re-normalise it with `docdb_id.normalize.processed_doc_number`. The API
+- and re-normalise it with `docdb_id.normalize.normalize_alternate_identifier`. The API
 endpoint will receive the country code and the number as two separate parameters
 and combine them in the same way, so alias keys built here are byte-for-byte
 identical to what the endpoint will compute at lookup time.
@@ -36,10 +36,12 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import date
 
-from docdb_id.normalize import processed_doc_number
+from docdb_id.country_codes import VALID_CC
+from docdb_id.normalize import normalize_alternate_identifier
 
 logger = logging.getLogger("docdb_id.alias.extract")
 
+# Country-specific rules for aliases.
 BRAZIL_C_RE = re.compile(rb"^C[0-9]+$")
 BRAZIL_PI_RE = re.compile(rb"^PI[0-9]+$")
 CUBA_P_RE = re.compile(rb"^P[0-9]+$")
@@ -64,10 +66,12 @@ US_D_RE = re.compile(rb"^D[0-9]+$")
 US_H_RE = re.compile(rb"^H[0-9]+$")
 SOUTH_AFRICA_A_RE = re.compile(rb"^A[0-9]+$")
 
+# Generic rules for aliases.
+JUST_DIGITS_RE = re.compile(rb"^[0-9]+$")
+CC_PLUS_NUMBER_RE = re.compile(rb"^[A-Z]{2}[A-Z0-9]{3,}$")
 
-JUST_NUMBERS_RE = re.compile(rb"^[0-9]+$")
-ALIAS_RE = re.compile(rb"^[A-Z][A-Z][A-Z0-9][A-Z0-9][A-Z0-9]+$")
-ZERO_STRIPPED_KEY_RE = re.compile(rb"^([A-Z]{2})([0-9]{4})([0-9]{6})$")
+# Synonym generators.
+CC_YYYY_NNNNNN_KEY_RE = re.compile(rb"^([A-Z]{2})([0-9]{4})([0-9]{6,})$")
 WO_TWO_DIGIT_YEAR_KEY_RE = re.compile(rb"^WO([0-9]{2})([0-9]{5})$")
 JP_ERA_KEY_RE = re.compile(rb"^JP[HS]([0-9]{3,})$")
 JP_ERA_PADDED_RE = re.compile(rb"^JP([HS])([0-9]{2})([1-9][0-9]{0,4})$")
@@ -100,8 +104,15 @@ COUNTRY_RULES: dict[bytes, tuple[tuple[re.Pattern[bytes], ...], int]] = {
 
 
 def zero_stripped_key_synonyms(key: bytes) -> Iterator[bytes]:
-    """Yield key aliases with leading zeros removed from a CCYYYYNNNNNN key."""
-    match = ZERO_STRIPPED_KEY_RE.fullmatch(key)
+    """Yield key aliases with zeros removed from CCYYYY0...0NNNNNN.
+
+    Args:
+        key: A key in CCYYYY0...0NNNNNN format.
+
+    Yields:
+        Key aliases with zeros progressively removed.
+    """
+    match = CC_YYYY_NNNNNN_KEY_RE.fullmatch(key)
     if match is None:
         return
 
@@ -119,7 +130,14 @@ def zero_stripped_key_synonyms(key: bytes) -> Iterator[bytes]:
 
 
 def wo_two_digit_year_synonyms(key: bytes) -> Iterator[bytes]:
-    """Yield WOYYYY aliases for a WOYYNNNNN key."""
+    """Yield WOYYYY aliases for a WOYYNNNNN key.
+
+    Args:
+        key: A WO key with a two-digit year (WOYYNNNNN format).
+
+    Yields:
+        WOYYYY aliases with both zero-padded and unpadded year formats.
+    """
     match = WO_TWO_DIGIT_YEAR_KEY_RE.fullmatch(key)
     if match is None:
         return
@@ -142,7 +160,13 @@ def jp_era_synonyms(key: bytes) -> Iterator[bytes]:
     external systems frequently omit when quoting the same publication. We emit
     `JP` + suffix as the canonical-form alias, plus each progressively
     zero-stripped variant. The 3-digit lower bound on the suffix keeps every
-    emitted alias at or above the 5-character minimum enforced by `ALIAS_RE`.
+    emitted alias at or above the 5-character minimum enforced by `CC_PLUS_NUMBER_RE`.
+
+    Args:
+        key: A JPH or JPS key with an era prefix.
+
+    Yields:
+        JP + suffix aliases with progressively zero-stripped variants.
     """
     match = JP_ERA_KEY_RE.fullmatch(key)
     if match is None:
@@ -167,6 +191,13 @@ def jp_era_padded_synonyms(key: bytes) -> Iterator[bytes]:
     `len(doc)+1` up to 6, emit both the era-kept and era-stripped variants. JP
     is the one CC where leading zeros after the country code are preserved by the
     lookup, so the era-stripped variants are emitted verbatim.
+
+    Args:
+        key: A JPH or JPS key with an era prefix, two-digit year, and unpadded
+            document number.
+
+    Yields:
+        Zero-padded JP aliases in both era-kept and era-stripped variants.
     """
     match = JP_ERA_PADDED_RE.fullmatch(key)
     if match is None:
@@ -187,7 +218,15 @@ MISSING_DATE = b"99999999"
 
 
 def _normalize_alias(alias: bytes) -> bytes | None:
-    """Return normalized alias bytes, or None if the alias is too short to store."""
+    """Return normalized alias bytes, or None if the alias is too short to store.
+
+    Args:
+        alias: The alias byte-string to normalize.
+
+    Returns:
+        Normalized alias bytes with leading zeros stripped from the body, or
+        None if the resulting body is fewer than 3 characters.
+    """
     if alias[:2] != b"JP":
         body = alias[2:].lstrip(b"0")
         if len(body) < 3:
@@ -197,7 +236,15 @@ def _normalize_alias(alias: bytes) -> bytes | None:
 
 
 def key_synonyms(key: bytes) -> Iterator[bytes]:
-    """Yield normalized key-derived alias byte-strings for *key*."""
+    """Yield normalized key-derived alias byte-strings for key.
+
+    Args:
+        key: A DOCDB key to generate synonyms for.
+
+    Yields:
+        Normalized alias byte-strings from zero-stripped, WO two-digit year,
+        JP era, and JP era-padded synonym generators.
+    """
     for synonym in zero_stripped_key_synonyms(key):
         normalized = _normalize_alias(synonym)
         if normalized is not None:
@@ -218,30 +265,48 @@ def key_synonyms(key: bytes) -> Iterator[bytes]:
 
 @dataclass(frozen=True)
 class OrigAliasBatch:
-    """Orig-derived aliases for one document plus skip counters for emit()."""
+    """Orig-derived aliases for one document plus skip counters for emit().
+
+    Args:
+        aliases: Tuple of normalized orig-derived alias byte-strings.
+        skipped_equal: True when the orig alias matched the key or country+alias.
+        skipped_pattern: True when the alias failed CC_PLUS_NUMBER_RE validation.
+    """
 
     aliases: tuple[bytes, ...]
     skipped_equal: bool = False
     skipped_pattern: bool = False
 
 
-def orig_aliases(key: bytes, orig: bytes) -> OrigAliasBatch:
-    """Return orig-derived normalized aliases for one document."""
-    if not orig or len(key) < 2:
+def orig_aliases(key: bytes, alt: bytes) -> OrigAliasBatch:
+    """Return normalized aliases derived from the original record.
+
+    ...
+
+    Args:
+        key: The DOCDB key for the document.
+        alt: The original alternate identifier to derive aliases from.
+
+    Returns:
+        An OrigAliasBatch containing the normalized aliases and skip flags
+        for bookkeeping.
+    """
+    if not alt or len(key) < 2:
         return OrigAliasBatch(())
 
     cc = key[:2]
-    if cc + orig.lstrip(b"0") == key:
+    if cc + alt.lstrip(b"0") == key:
         return OrigAliasBatch((), skipped_equal=True)
 
-    alias = processed_doc_number(orig)
-    if not alias:
-        return OrigAliasBatch(())
+    alias = normalize_alternate_identifier(alt)
+    # The specified alias is the same as the key.
     if alias == key:
         return OrigAliasBatch((), skipped_equal=True)
+    # The specified alias is the identifier without country code.
     if cc + alias == key:
         return OrigAliasBatch((), skipped_equal=True)
 
+    # Process country-specific rules.
     country_rule = COUNTRY_RULES.get(cc)
     if country_rule is not None:
         patterns, trim_suffix = country_rule
@@ -254,10 +319,14 @@ def orig_aliases(key: bytes, orig: bytes) -> OrigAliasBatch:
                 return OrigAliasBatch(())
             return OrigAliasBatch((normalized,))
 
-    if JUST_NUMBERS_RE.fullmatch(alias) and len(alias) > 3:
+    # If the alias is just digits, assume it's the document number
+    # and add the country code to get the full alias.
+    if JUST_DIGITS_RE.fullmatch(alias) and len(alias) > 3:
         alias = cc + alias
-    if not ALIAS_RE.fullmatch(alias):
-        logger.debug("skipped pattern: %r %r (%r)", orig, alias, key)
+    # At that point, the alias must be in the
+    # form CC + number, otherwise, strop trying.
+    if not CC_PLUS_NUMBER_RE.fullmatch(alias) or alias[:2] not in VALID_CC:
+        logger.debug("skipped pattern: %r %r (%r)", alt, alias, key)
         return OrigAliasBatch((), skipped_pattern=True)
 
     normalized = _normalize_alias(alias)
@@ -267,23 +336,47 @@ def orig_aliases(key: bytes, orig: bytes) -> OrigAliasBatch:
 
 
 def aliases_for_document(key: bytes, orig: bytes) -> Iterator[bytes]:
-    """Yield every normalized alias for one document (key synonyms + orig aliases)."""
+    """Yield every normalized alias for one document (key synonyms + orig aliases).
+
+    Args:
+        key: The DOCDB key for the document.
+        orig: The original document number.
+
+    Yields:
+        Normalized alias byte-strings from key synonyms and orig aliases.
+    """
     yield from key_synonyms(key)
     yield from orig_aliases(key, orig).aliases
 
 
 def _write_alias(out, alias: bytes, key: bytes, date_publ: bytes) -> bool:
-    """Write one alias row to *out*. Returns True on success."""
+    """Write one alias row to out.
+
+    Args:
+        out: A writeable file-like object.
+        alias: The normalized alias byte-string.
+        key: The original DOCDB key.
+        date_publ: The publication date byte-string (may be empty).
+
+    Returns:
+        True on success.
+    """
     out.write(alias + b"\t" + key + b"\t" + (date_publ or MISSING_DATE) + b"\n")
     return True
 
 
 def emit(src, out) -> tuple[int, int, int, int, int, int, int, int]:
-    """Read 6-col TSV rows from *src* and write 3-col alias input to *out*.
+    """Read 6-col TSV rows from src and write 3-col alias input to out.
 
-    Returns `(n_in, n_out, n_zero_stripped, n_wo_two_digit_year, n_jp_era,
-    n_jp_era_padded, n_skipped_equal, n_skipped_pattern)` so the caller can
-    sanity check coverage.
+    Args:
+        src: An iterable of byte-strings or text-strings (TSV rows).
+        out: A writeable file-like object.
+
+    Returns:
+        A tuple of eight integers:
+        (n_in, n_out, n_zero_stripped, n_wo_two_digit_year, n_jp_era,
+        n_jp_era_padded, n_skipped_equal, n_skipped_pattern) so the caller can
+        sanity check coverage.
     """
     n_in = 0
     n_out = 0

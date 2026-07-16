@@ -67,6 +67,7 @@ app = FastAPI(title="DOCDB Disambiguator", lifespan=lifespan)
 
 
 class Record(BaseModel):
+    """A single canonical DOCDB patent record."""
     docdb_id: str
     inventor: str
     date_publ: str
@@ -74,11 +75,13 @@ class Record(BaseModel):
 
 
 class BatchItem(BaseModel):
+    """A single batch query item."""
     cc: str
     number: str
 
 
 class BatchRequest(BaseModel):
+    """A batch query request containing up to MAX_BATCH items."""
     items: list[BatchItem]
 
     @field_validator("items")
@@ -90,6 +93,7 @@ class BatchRequest(BaseModel):
 
 
 class BatchItemResult(BaseModel):
+    """Result of a single batch query item."""
     cc: str
     number: str
     results: list[Record]
@@ -97,12 +101,28 @@ class BatchItemResult(BaseModel):
 
 
 def _validate_cc(cc: str) -> str | None:
+    """Validate a country code against known DOCDB codes.
+
+    Args:
+        cc: Two-letter country code to validate.
+
+    Returns:
+        "cc_does_not_exist" if invalid, None if valid.
+    """
     if cc.upper().encode() not in VALID_CC:
         return "cc_does_not_exist"
     return None
 
 
 def _validate_number(number: str) -> str | None:
+    """Validate a publication number is ASCII alphanumeric.
+
+    Args:
+        number: Publication number string to validate.
+
+    Returns:
+        "number_is_not_alnum" if invalid, None if valid.
+    """
     if not (number.isascii() and number.isalnum()):
         return "number_is_not_alnum"
     return None
@@ -119,6 +139,14 @@ HEALTH_CHECK_DOCDB_ID = "US8000000B2"
 
 @app.api_route("/health", methods=["GET", "HEAD"])
 async def health() -> dict:
+    """Health check endpoint verifying LMDB access with a known record.
+
+    Returns:
+        {"status": "ok"} on success.
+
+    Raises:
+        HTTPException 503: If LMDB query fails or expected record is missing.
+    """
     env = app.state.env
     docs_db = app.state.docs_db
     alias_db = app.state.alias_db
@@ -142,6 +170,11 @@ async def health() -> dict:
 
 @app.get("/stats")
 async def stats() -> dict:
+    """Return database statistics including last update time and key count.
+
+    Returns:
+        dict with keys: last_updated (str|None), key_count (int).
+    """
     env = app.state.env
     docs_db = app.state.docs_db
     meta_db = app.state.meta_db
@@ -168,6 +201,18 @@ async def query(
     cc: Annotated[str, Query(min_length=2, max_length=2)],
     number: Annotated[str, Query(min_length=1)],
 ) -> list[Record]:
+    """Look up a patent publication number and return matching DOCDB records.
+
+    Args:
+        cc: Two-letter DOCDB country code.
+        number: Publication number without kind code or country prefix.
+
+    Returns:
+        List of matching Record objects.
+
+    Raises:
+        HTTPException 422: If cc or number fails validation.
+    """
     if err := _validate_cc(cc):
         raise HTTPException(status_code=422, detail=err)
     if err := _validate_number(number):
@@ -187,6 +232,14 @@ async def query(
 
 @app.post("/batch")
 async def batch(req: BatchRequest) -> list[BatchItemResult]:
+    """Batch query multiple patent publication numbers at once.
+
+    Args:
+        req: BatchRequest containing up to MAX_BATCH items.
+
+    Returns:
+        List of BatchItemResult, one per input item.
+    """
     env = app.state.env
     docs_db = app.state.docs_db
     alias_db = app.state.alias_db
@@ -213,5 +266,6 @@ async def batch(req: BatchRequest) -> list[BatchItemResult]:
 
 
 def main() -> None:
+    """Run the FastAPI server with uvicorn."""
     import uvicorn
     uvicorn.run("docdb_id.api.server:app", host="0.0.0.0", port=8000)

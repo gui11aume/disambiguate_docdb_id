@@ -23,7 +23,15 @@ def _decode(value: bytes) -> str:
 
 
 def show_meta(lmdb_path: Path, out: IO[str] | None = None) -> int:
-    """Print key/value pairs from the meta sub-DB. Returns 0 on success."""
+    """Print key/value pairs from the meta sub-DB.
+
+    Args:
+        lmdb_path: Path to the LMDB environment.
+        out: Output stream (defaults to sys.stdout).
+
+    Returns:
+        Exit code (0 on success, 1 if the path does not exist).
+    """
     if out is None:
         out = sys.stdout
 
@@ -65,6 +73,14 @@ def show_meta(lmdb_path: Path, out: IO[str] | None = None) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Dump entries in the LMDB `meta` sub-DB.
+
+    Args:
+        argv: Command-line argument list. Must contain the LMDB path.
+
+    Returns:
+        Exit code (0 on success, 1 on usage error).
+    """
     argv = sys.argv[1:] if argv is None else argv
 
     if len(argv) < 1:

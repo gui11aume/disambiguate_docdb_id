@@ -53,14 +53,29 @@ class _Collision(Exception):
 
 
 def add_alias(txn: lmdb.Transaction, alias_db, docs_db, alias: bytes, key: bytes) -> None:
-    """Insert *alias* -> *key* unless *alias* is already a docs key or taken."""
+    """Insert *alias* -> *key* unless *alias* is already a docs key or taken.
+
+    Args:
+        txn: Open LMDB write transaction.
+        alias_db: Handle for the alias sub-DB.
+        docs_db: Handle for the docs sub-DB.
+        alias: Alias key to insert.
+        key: Primary key to map the alias to.
+    """
     if txn.get(alias, db=docs_db) is not None:
         return
     txn.put(alias, key, overwrite=False, db=alias_db)
 
 
 def remove_alias(txn: lmdb.Transaction, alias_db, alias: bytes, key: bytes) -> None:
-    """Delete *alias* only when it still maps to *key*."""
+    """Delete *alias* only when it still maps to *key*.
+
+    Args:
+        txn: Open LMDB write transaction.
+        alias_db: Handle for the alias sub-DB.
+        alias: Alias key to delete.
+        key: Primary key that must still be the current mapping.
+    """
     if txn.get(alias, db=alias_db) == key:
         txn.delete(alias, db=alias_db)
 
@@ -80,6 +95,19 @@ def _put_or_die(
     `False` from `cursor.put` rather than raising, so we check the return
     value explicitly and translate it into a precise, actionable error that
     distinguishes a sort violation from a duplicate alias mapping.
+
+    Args:
+        txn: Open LMDB write transaction.
+        cursor: Cursor on the alias sub-DB.
+        alias_db: Handle for the alias sub-DB.
+        alias: Alias key to insert.
+        primary_key: Primary key to map the alias to.
+        line_no: Source line number for error messages.
+        last_alias: Previous alias key for sort-order validation.
+
+    Raises:
+        _Collision: On sort violation, duplicate alias, or unexpected LMDB
+            rejection.
     """
     if cursor.put(alias, primary_key, append=True, overwrite=False):
         return
@@ -110,9 +138,22 @@ def load_alias(
 ) -> tuple[int, int]:
     """Load *src* into the `alias` sub-DB of an existing LMDB env.
 
-    Returns `(n_written, n_skipped_docs)`. The env is expected to have been
-    built by `docdb_id.store.core` already; this loader only adds the alias
-    sub-DB and updates a couple of meta keys.
+    The env is expected to have been built by `docdb_id.store.core` already;
+    this loader only adds the alias sub-DB and updates a couple of meta keys.
+
+    Args:
+        src: Iterable of TSV lines (bytes or str), sorted by alias with
+            `LC_ALL=C`.
+        lmdb_path: Path to the existing LMDB directory.
+        map_size: Map size for the LMDB environment.
+        commit_every: Commit and reopen a write transaction every N keys.
+
+    Returns:
+        Tuple of (n_written, n_skipped_docs).
+
+    Raises:
+        FileNotFoundError: If the LMDB path does not exist.
+        _Collision: On malformed or duplicate input data.
     """
     if not lmdb_path.exists():
         raise FileNotFoundError(f"{lmdb_path} does not exist; build the docs sub-DB first with docdb_id.store.core.")
@@ -175,7 +216,7 @@ def load_alias(
                 txn.commit()
                 txn = env.begin(write=True)
                 cursor = txn.cursor(db=alias_db)
-                logger.info("alias: %s aliases...", f"{n:,}")
+                logger.info(f"alias: {n:,} aliases...")
 
         txn.commit()
     except BaseException:
@@ -207,7 +248,16 @@ def prune_orphan_aliases(
     timestamp; it is cleared at the start of the run so an interrupted prune does
     not leave the database falsely marked clean.
 
-    Returns `(n_scanned, n_deleted)`.
+    Args:
+        lmdb_path: Path to the existing LMDB directory.
+        map_size: Map size for the LMDB environment.
+        commit_every: Commit and reopen a write transaction every N deletions.
+
+    Returns:
+        Tuple of (n_scanned, n_deleted).
+
+    Raises:
+        FileNotFoundError: If the LMDB path does not exist.
     """
     if not lmdb_path.exists():
         raise FileNotFoundError(f"{lmdb_path} does not exist; build the docs sub-DB first.")
@@ -257,7 +307,7 @@ def prune_orphan_aliases(
                 if i % commit_every == 0:
                     txn.commit()
                     txn = env.begin(write=True)
-                    logger.info("alias prune: %s/%s removed...", f"{i:,}", f"{len(orphans):,}")
+                    logger.info(f"alias prune: {i:,}/{len(orphans):,} removed...")
             txn.commit()
         except BaseException:
             txn.abort()

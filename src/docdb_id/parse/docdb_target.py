@@ -44,6 +44,14 @@ def make_key(cc: bytes, doc_number: bytes) -> bytes:
     carry lower-case kind suffixes in the doc-number, which would otherwise
     produce duplicate keys). Both inputs are expected to be already-trimmed
     bytes taken straight from `<exch:exchange-document country=... doc-number=...>`.
+
+    Args:
+        cc: Two-letter country code as bytes.
+        doc_number: Document number as bytes.
+
+    Returns:
+        Upper-cased key bytes with leading zeros stripped from the
+        numeric portion.
     """
     return (cc + doc_number.lstrip(b"0")).upper()
 
@@ -223,6 +231,9 @@ class FrontfileTarget(_DocdbTargetBase):
     per-file document counter, so a plain `LC_ALL=C` sort orders operations
     chronologically. Rows with no usable identifier or an unknown `status` are
     dropped rather than emitted as un-appliable operations.
+
+    Args:
+        file_idx: Chronological delivery index for the frontfile.
     """
 
     __slots__ = ("_file_idx", "_pos")

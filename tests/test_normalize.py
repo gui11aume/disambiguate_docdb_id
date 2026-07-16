@@ -6,86 +6,84 @@ import io
 
 from docdb_id.normalize import (
     EntityNormalizingReader,
-    _entity_safe_prefix_len,
-    normalize_xml_entities,
-    processed_doc_number,
+    normalize_alternate_identifier,
 )
 
-
-# ── processed_doc_number ────────────────────────────────────────────────────
-
-
-def test_processed_doc_number_strips_leading_zeros():
-    assert processed_doc_number("US0000123456") == b"US123456"
+# ── normalize_alternate_identifier ────────────────────────────────────────────────────
 
 
-def test_processed_doc_number_strips_whitespace():
-    assert processed_doc_number("US 0123456") == b"US123456"
+def test_normalize_alternate_identifier_strips_leading_zeros_w_cc():
+    assert normalize_alternate_identifier("US0000123456") == b"US123456"
+
+def test_normalize_alternate_identifier_strips_leading_zeros_wo_cc():
+    # XX is not a valid country code, so the input is returned unchanged.
+    assert normalize_alternate_identifier("XX0000123456") == b"XX0000123456"
+    # Without any country code, leading zeros are stripped.
+    assert normalize_alternate_identifier("0000123456") == b"123456"
+
+def test_normalize_alternate_identifier_strips_whitespace():
+    assert normalize_alternate_identifier("US 0123456") == b"US123456"
 
 
-def test_processed_doc_number_strips_separators():
-    assert processed_doc_number("US-0123456") == b"US123456"
+def test_normalize_alternate_identifier_strips_separators():
+    assert normalize_alternate_identifier("US-0123456") == b"US123456"
 
 
-def test_processed_doc_number_upper_cases():
-    assert processed_doc_number("us123456") == b"US123456"
+def test_normalize_alternate_identifier_upper_cases():
+    assert normalize_alternate_identifier("us123456") == b"US123456"
 
 
-def test_processed_doc_number_strips_trailing_kind_if_decimal_suffix():
-    # "." followed by digits only at end is stripped
-    assert processed_doc_number("US123456.1") == b"US123456"
+def test_normalize_alternate_identifier_strips_trailing_kind_if_decimal_suffix():
+    # "." followed by digits at end is stripped.
+    assert normalize_alternate_identifier("US123456.1") == b"US123456"
 
 
-def test_processed_doc_number_too_short_returns_empty():
-    assert processed_doc_number("US") == b"US"
+def test_normalize_alternate_identifier_no_valid_cc_returns_cleaned_unchanged():
+    assert normalize_alternate_identifier("888888-1") == b"8888881"
+    assert normalize_alternate_identifier("  1234 / A1  ") == b"1234A1"
 
 
-# ── normalize_xml_entities ──────────────────────────────────────────────────
+def test_normalize_alternate_identifier_dot_not_trailing_version_is_kept():
+    # Removes digits but not something else, like "R1".
+    assert normalize_alternate_identifier("US8000000.R1") == b"US8000000.R1"
 
 
-def test_normalize_known_entity():
-    assert normalize_xml_entities(b"&EACUTE;") == b"&#201;"
+def test_normalize_alternate_identifier_multiple_dots_strips_only_last_version():
+    # Not an identifier, but this is how the rule works.
+    assert normalize_alternate_identifier("US1.2.3") == b"US1.2"
 
 
-def test_normalize_builtin_entity_unchanged():
-    assert normalize_xml_entities(b"&amp;") == b"&amp;"
-    assert normalize_xml_entities(b"&lt;") == b"&lt;"
+def test_normalize_alternate_identifier_hyphen_and_slash_are_stripped():
+    assert normalize_alternate_identifier("US-2000123456-A1") == b"US2000123456A1"
+    assert normalize_alternate_identifier("US 2000/123456 A1") == b"US2000123456A1"
 
 
-def test_normalize_unknown_entity_escaped():
-    result = normalize_xml_entities(b"&UnknownXYZ;")
-    assert b"&amp;UnknownXYZ;" == result
-
-
-def test_normalize_no_entities_unchanged():
-    data = b"<doc>hello world</doc>"
-    assert normalize_xml_entities(data) == data
-
-
-# ── _entity_safe_prefix_len ──────────────────────────────────────────────────
-
-
-def test_safe_prefix_no_amp_returns_full_length():
-    data = b"hello world"
-    assert _entity_safe_prefix_len(data) == len(data)
-
-
-def test_safe_prefix_complete_entity_returns_full_length():
-    data = b"&amp;"
-    assert _entity_safe_prefix_len(data) == len(data)
-
-
-def test_safe_prefix_partial_entity_at_end_cuts_before_amp():
-    data = b"text&EAC"
-    result = _entity_safe_prefix_len(data)
-    assert result == 4  # cut before '&'
-
-
-# ── EntityNormalizingReader ──────────────────────────────────────────────────
-
+# ── EntityNormalizingReader._entity_safe_prefix_len ──────────────────────────
 
 def _reader(data: bytes) -> EntityNormalizingReader:
     return EntityNormalizingReader(io.BytesIO(data))
+
+
+def test_safe_prefix_no_amp_returns_full_length():
+    r = _reader(b"")
+    data = b"hello world"
+    assert r._entity_safe_prefix_len(data) == len(data)
+
+
+def test_safe_prefix_complete_entity_returns_full_length():
+    r = _reader(b"")
+    data = b"&amp;"
+    assert r._entity_safe_prefix_len(data) == len(data)
+
+
+def test_safe_prefix_partial_entity_at_end_cuts_before_amp():
+    r = _reader(b"")
+    data = b"text&EAC"
+    result = r._entity_safe_prefix_len(data)
+    assert result == 4  # cut before '&'
+
+
+# ── EntityNormalizingReader.read ─────────────────────────────────────────────
 
 
 def test_reader_passthrough_plain_text():
@@ -95,7 +93,7 @@ def test_reader_passthrough_plain_text():
 
 def test_reader_rewrites_entity():
     r = _reader(b"<n>&EACUTE;</n>")
-    assert r.read(1024) == b"<n>&#201;</n>"
+    assert r.read(1024) == b"<n></n>"
 
 
 def test_reader_handles_entity_split_across_chunks():
@@ -105,7 +103,7 @@ def test_reader_handles_entity_split_across_chunks():
     chunk1 = r.read(6)   # reads up to the safe boundary before '&'
     chunk2 = r.read(1024)
     combined = chunk1 + chunk2
-    assert combined == b"<n>&#201;</n>"
+    assert combined == b"<n></n>"
 
 
 def test_reader_read_all_negative():

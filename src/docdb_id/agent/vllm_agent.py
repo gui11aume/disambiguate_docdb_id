@@ -103,6 +103,18 @@ TOOLS = [
 
 
 def _call_resolve_docdb_id(cc: str, number: str) -> list[dict]:
+    """Call the DOCDB API query endpoint.
+
+    Args:
+        cc: Two-letter DOCDB country code.
+        number: Publication number without kind code.
+
+    Returns:
+        Parsed JSON response as a list of dict records.
+
+    Raises:
+        httpx.HTTPStatusError: If the API returns a non-2xx status.
+    """
     url = f"{DOCDB_API_URL.rstrip('/')}/query"
     resp = httpx.get(url, params={"cc": cc, "number": number}, timeout=10.0)
     resp.raise_for_status()
@@ -110,6 +122,18 @@ def _call_resolve_docdb_id(cc: str, number: str) -> list[dict]:
 
 
 def _dispatch_tool(name: str, arguments: str) -> str:
+    """Dispatch a tool call to the appropriate handler.
+
+    Args:
+        name: Tool function name.
+        arguments: JSON-encoded tool arguments.
+
+    Returns:
+        JSON-encoded tool result.
+
+    Raises:
+        ValueError: Unknown tool name.
+    """
     args = json.loads(arguments)
     if name == "resolve_docdb_id":
         result = _call_resolve_docdb_id(args["cc"], args["number"])
@@ -161,6 +185,7 @@ def run(user_message: str, system_prompt: str | None = None) -> str:
 
 
 def main() -> None:
+    """CLI entry point for the patent disambiguation agent."""
     import argparse
 
     logging.basicConfig(level=logging.INFO)

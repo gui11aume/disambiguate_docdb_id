@@ -87,6 +87,15 @@ class BddsClient:
     # ---- authentication ------------------------------------------------------
 
     def _authenticate(self) -> None:
+        """Request a new OAuth2 bearer token from the EPO token endpoint.
+
+        Stores the token and its expiry on the instance. Called automatically
+        by `_ensure_token` when no token exists or the cached one is within
+        `TOKEN_REFRESH_BUFFER` of expiry.
+
+        Raises:
+            BddsAuthError: Token request failed.
+        """
         body = urllib.parse.urlencode(
             {
                 "grant_type": "password",
@@ -124,18 +133,32 @@ class BddsClient:
         logger.debug("acquired EPO BDDS token, expires at %s", self._token_expiry.isoformat())
 
     def _ensure_token(self) -> str:
+        """Return a valid bearer token, authenticating if necessary.
+
+        Returns:
+            A valid OAuth2 bearer token.
+        """
         if self._token is None or datetime.now(timezone.utc) + TOKEN_REFRESH_BUFFER >= self._token_expiry:
             self._authenticate()
         assert self._token is not None
         return self._token
 
     def _invalidate_token(self) -> None:
+        """Clear the cached token, forcing a fresh authentication on the next request."""
         self._token = None
         self._token_expiry = datetime.min.replace(tzinfo=timezone.utc)
 
     # ---- low-level requests --------------------------------------------------
 
     def _build_request(self, url: str) -> urllib.request.Request:
+        """Build a GET request with the current bearer token.
+
+        Args:
+            url: The request URL.
+
+        Returns:
+            A prepared GET request with Authorization header.
+        """
         return urllib.request.Request(
             url,
             method="GET",
@@ -147,6 +170,17 @@ class BddsClient:
         )
 
     def _get_json(self, path: str) -> Any:
+        """GET a JSON resource from the BDDS API with retry and re-auth logic.
+
+        Args:
+            path: API path relative to `API_BASE`.
+
+        Returns:
+            Parsed JSON response.
+
+        Raises:
+            BddsError: Request failed after all retries.
+        """
         url = f"{API_BASE}{path}"
         last_exc: Exception | None = None
         for attempt in range(MAX_RETRIES):
@@ -178,12 +212,42 @@ class BddsClient:
     # ---- high-level API ------------------------------------------------------
 
     def list_products(self) -> list[dict[str, Any]]:
+        """List all BDDS products.
+
+        Returns:
+            Available products.
+
+        Raises:
+            BddsError: API request failed.
+        """
         return self._get_json("/products/")
 
     def get_product(self, product_id: int) -> dict[str, Any]:
+        """Get a single BDDS product by ID.
+
+        Args:
+            product_id: The product identifier.
+
+        Returns:
+            Product details including deliveries.
+
+        Raises:
+            BddsError: Product not found or API request failed.
+        """
         return self._get_json(f"/products/{product_id}")
 
     def latest_delivery(self, product_id: int) -> dict[str, Any]:
+        """Return the most recent delivery for a product.
+
+        Args:
+            product_id: The product identifier.
+
+        Returns:
+            The latest delivery record.
+
+        Raises:
+            BddsError: Product has no deliveries.
+        """
         deliveries = self.get_product(product_id).get("deliveries") or []
         if not deliveries:
             raise BddsError(f"product {product_id} has no deliveries")
@@ -192,6 +256,17 @@ class BddsClient:
         return max(deliveries, key=lambda d: d.get("deliveryPublicationDatetime", ""))
 
     def all_deliveries(self, product_id: int) -> list[dict[str, Any]]:
+        """Return all deliveries for a product, oldest first.
+
+        Args:
+            product_id: The product identifier.
+
+        Returns:
+            Delivery records sorted chronologically.
+
+        Raises:
+            BddsError: Product has no deliveries.
+        """
         deliveries = self.get_product(product_id).get("deliveries") or []
         if not deliveries:
             raise BddsError(f"product {product_id} has no deliveries")
@@ -202,12 +277,19 @@ class BddsClient:
         """Stream one delivery file to `dst`. Always starts from byte 0.
 
         The EPO download endpoint ignores `Range` requests, so resuming a
-        partially-downloaded file is not possible - every invocation pulls the
-        full body and truncates the target.
+        partially-downloaded file is not possible. The body is streamed to
+        a sibling `*.part` file and renamed onto `dst` only after the full
+        transfer succeeds, so an interrupted download never leaves a truncated
+        file at the final path.
 
-        The body is streamed to a sibling `*.part` file and renamed onto
-        `dst` only after the full transfer succeeds, so an interrupted
-        download never leaves a truncated file at the final path.
+        Args:
+            product_id: The product identifier.
+            delivery_id: The delivery identifier.
+            file_id: The file identifier.
+            dst: Destination path for the downloaded file.
+
+        Raises:
+            BddsError: Download failed after all retries.
         """
         url = f"{API_BASE}/products/{product_id}/delivery/{delivery_id}/file/{file_id}/download"
         part = dst.with_name(dst.name + PART_SUFFIX)
@@ -244,7 +326,14 @@ class BddsClient:
 
 
 def _safe_error_body(exc: urllib.error.HTTPError) -> str:
-    """Best-effort decode of an HTTPError body for logging."""
+    """Best-effort decode of an HTTPError body for logging.
+
+    Args:
+        exc: The HTTP error response.
+
+    Returns:
+        Decoded error body, truncated to 500 chars, or `<no body>`.
+    """
     try:
         return exc.read().decode("utf-8", errors="replace")[:500]
     except Exception:
@@ -252,12 +341,25 @@ def _safe_error_body(exc: urllib.error.HTTPError) -> str:
 
 
 def _sleep_backoff(attempt: int, *, reason: str) -> None:
+    """Sleep with exponential backoff before retrying a request.
+
+    Args:
+        attempt: The zero-indexed attempt number.
+        reason: Human-readable reason for the retry.
+    """
     delay = RETRY_BACKOFF_BASE * (2**attempt)
     logger.warning("retrying after %.1fs (attempt %d): %s", delay, attempt + 1, reason)
     time.sleep(delay)
 
 
 def _stream_to_file(resp: Any, dst: Path, *, total_bytes: int | None) -> None:
+    """Stream an HTTP response body to a file with a progress bar.
+
+    Args:
+        resp: The HTTP response object (file-like).
+        dst: Destination path for the streamed content.
+        total_bytes: Expected total size for progress display, or None.
+    """
     dst.parent.mkdir(parents=True, exist_ok=True)
     progress = tqdm(
         total=total_bytes,
@@ -280,7 +382,14 @@ def _stream_to_file(resp: Any, dst: Path, *, total_bytes: int | None) -> None:
 
 
 def _expected_file_size(file_meta: dict[str, Any]) -> int | None:
-    """Best-effort extraction of the advertised file size from a BDDS file object."""
+    """Best-effort extraction of the advertised file size from a BDDS file object.
+
+    Args:
+        file_meta: A BDDS file metadata dictionary.
+
+    Returns:
+        The file size in bytes, or None if not found.
+    """
     for key in ("fileSize", "fileSizeBytes", "size", "sizeInBytes", "contentLength"):
         value = file_meta.get(key)
         if value is None:
@@ -293,7 +402,11 @@ def _expected_file_size(file_meta: dict[str, Any]) -> int | None:
 
 
 def unlink_quietly(path: Path) -> None:
-    """Remove `path` if present, swallowing missing-file and OS errors."""
+    """Remove `path` if present, swallowing missing-file and OS errors.
+
+    Args:
+        path: The file path to remove.
+    """
     try:
         path.unlink()
     except FileNotFoundError:
@@ -306,8 +419,13 @@ def _zip_is_valid(path: Path) -> bool:
     """Return True if `path` is a structurally sound zip archive.
 
     `testzip()` walks the central directory and CRC-checks every member, so a
-    truncated download (missing the end-of-central-directory record or with a
-    short final member) is reliably detected.
+    truncated download is reliably detected.
+
+    Args:
+        path: Path to the zip file to validate.
+
+    Returns:
+        True if the archive is valid, False otherwise.
     """
     try:
         with zipfile.ZipFile(path) as zf:
@@ -318,7 +436,15 @@ def _zip_is_valid(path: Path) -> bool:
 
 
 def file_is_complete(dst: Path, file_meta: dict[str, Any]) -> bool:
-    """Return True if `dst` already holds the fully-downloaded delivery file."""
+    """Return True if `dst` already holds the fully-downloaded delivery file.
+
+    Args:
+        dst: Path to the local file.
+        file_meta: BDDS file metadata to check the expected size.
+
+    Returns:
+        True if the file exists, matches expected size, and is valid.
+    """
     if not dst.exists():
         return False
     expected_size = _expected_file_size(file_meta)
@@ -334,7 +460,11 @@ def file_is_complete(dst: Path, file_meta: dict[str, Any]) -> bool:
 def credentials_from_env() -> tuple[str, str]:
     """Read EPO_BDDS_USERNAME and EPO_BDDS_PASSWORD from the environment.
 
-    Exits the program with a clear error message if either is missing.
+    Returns:
+        tuple[str, str]: The (username, password) pair.
+
+    Raises:
+        SystemExit: Either environment variable is missing or empty.
     """
     username = os.environ.get("EPO_BDDS_USERNAME", "")
     password = os.environ.get("EPO_BDDS_PASSWORD", "")

@@ -19,6 +19,7 @@ Resume differs by product, reflecting what each can verify without downloading:
 from __future__ import annotations
 
 import functools
+import gzip
 import logging
 import shutil
 import tempfile
@@ -27,7 +28,7 @@ import zipfile
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import IO, Any, Literal
 
 from lxml import etree as LET
 from tqdm import tqdm
@@ -39,7 +40,7 @@ from docdb_id.bdds.client import (
     file_is_complete,
     unlink_quietly,
 )
-from docdb_id.normalize import EntityNormalizingReader, open_xml
+from docdb_id.normalize import EntityNormalizingReader
 from docdb_id.parse.docdb_target import BackfileTarget, FrontfileTarget
 
 logger = logging.getLogger("docdb_id.bdds.ingest")
@@ -49,14 +50,39 @@ _CHUNK = 1 << 20  # 1 MiB
 # OAuth token refresh is not lock-protected inside BddsClient; serialize downloads.
 _DOWNLOAD_LOCK = threading.Lock()
 
+_GZIP_MAGIC = b"\x1f\x8b"
+
+
+def open_xml(path: Path) -> IO[bytes]:
+    """Open a file as a binary stream, transparently decompressing gzip content.
+
+    Args:
+        path: Filesystem path to the XML file.
+
+    Returns:
+        A binary IO stream.
+    """
+    with path.open("rb") as f:
+        magic = f.read(len(_GZIP_MAGIC))
+    if magic == _GZIP_MAGIC:
+        return gzip.open(path, "rb")
+    return path.open("rb")
+
 
 # ── Parse workers (module-level for pickling) ────────────────────────────────
 
 
 def _parse_backfile_xml(job: tuple[str, str]) -> str | None:
-    """Parse one backfile inner XML into a 6-column TSV part."""
+    """Parse one backfile inner XML into a 6-column TSV part.
+
+    Args:
+        job: Tuple of (xml_path, part_output_path) as strings.
+
+    Returns:
+        str | None: Error message if parsing failed, None on success.
+    """
     xml_path, part_path = Path(job[0]), Path(job[1])
-    tmp_path = part_path.with_name(part_path.name + ".tmp")
+    tmp_path = part_path.with_name(f"{part_path.name}.tmp")
     try:
         target = BackfileTarget()
         parser = LET.XMLParser(target=target, recover=True, huge_tree=True, resolve_entities=False)
@@ -87,10 +113,16 @@ def _parse_frontfile_part(job: tuple[list[str], str, int]) -> str | None:
     part; `file_idx` (the part's global chronological index) is the high half
     of that token. Written via a sibling `*.tmp` and atomically renamed, so an
     interrupted run never leaves a partial part that resume would treat as done.
+
+    Args:
+        job: Tuple of (xml_path_strings, part_output_path, file_idx).
+
+    Returns:
+        str | None: Error message if parsing failed, None on success.
     """
     xml_strs, part_path_str, file_idx = job
     part_path = Path(part_path_str)
-    tmp_path = part_path.with_name(part_path.name + ".tmp")
+    tmp_path = part_path.with_name(f"{part_path.name}.tmp")
     try:
         target = FrontfileTarget(file_idx)
         for xml_str in xml_strs:
@@ -119,10 +151,17 @@ def _parse_frontfile_part(job: tuple[list[str], str, int]) -> str | None:
 
 
 def expand_nested_zip(container_path: Path, work_dir: Path) -> tuple[list[Path], list[str]]:
-    """Outer zip -> `Root/DOC/*.zip` -> one XML each. Returns (xml_paths, errors).
+    """Outer zip -> `Root/DOC/*.zip` -> one XML each.
 
     Shared by both products: backfile and frontfile deliveries have the same
     nested layout.
+
+    Args:
+        container_path: Path to the outer delivery zip.
+        work_dir: Temporary directory for extraction.
+
+    Returns:
+        tuple[list[Path], list[str]]: Tuple of (xml_paths, error_messages).
     """
     errors: list[str] = []
     try:
@@ -208,6 +247,16 @@ class IngestConfig:
 
 
 def _done_marker(out_dir: Path, subdir: str, key: str) -> Path:
+    """Return the path to the done marker for a backfile outer zip.
+
+    Args:
+        out_dir: Base output directory.
+        subdir: Subdirectory under `out_dir` for markers.
+        key: Outer zip stem used as the marker name.
+
+    Returns:
+        Path: The done marker file path.
+    """
     return out_dir / subdir / f"{key}.done"
 
 
@@ -218,9 +267,18 @@ def _download_if_needed(
     *,
     skip_if_complete: bool,
 ) -> str | None:
-    """Download `item.local_path` when online. Returns an error string or None.
+    """Download `item.local_path` when online.
 
     Offline items (no client / file_id) are assumed already present on disk.
+
+    Args:
+        client: BDDS client instance, or None for offline mode.
+        product_id: The product identifier.
+        item: The work item to download.
+        skip_if_complete: Skip download if the file is already complete on disk.
+
+    Returns:
+        str | None: Error message if download failed, None on success.
     """
     if client is None or item.file_id is None or item.delivery_id is None:
         return None
@@ -246,7 +304,22 @@ def _handle_item(
     done_subdir: str,
     skip_download_if_complete: bool,
 ) -> WorkResult:
-    """Dispatch one outer zip to the product-specific handler."""
+    """Dispatch one outer zip to the product-specific handler.
+
+    Args:
+        item: The work item to process.
+        client: BDDS client instance, or None for offline mode.
+        product_id: The product identifier.
+        out_dir: Output directory for parsed TSVs.
+        work_root: Temporary working directory root.
+        parse_pool: Shared process pool for XML parsing.
+        delete_source: Whether to delete the source zip after parsing.
+        done_subdir: Subdirectory for backfile done markers.
+        skip_download_if_complete: Skip download if the file is complete.
+
+    Returns:
+        WorkResult: Outcome of processing.
+    """
     if item.parser_kind == "frontfile":
         return _handle_frontfile_item(
             item,
@@ -281,7 +354,21 @@ def _handle_frontfile_item(
     delete_source: bool,
     skip_download_if_complete: bool,
 ) -> WorkResult:
-    """One outer delivery part -> one `part_<stem>.tsv`; the TSV is the resume key."""
+    """One outer delivery part -> one `part_<stem>.tsv`; the TSV is the resume key.
+
+    Args:
+        item: The work item to process.
+        client: BDDS client instance, or None for offline mode.
+        product_id: The product identifier.
+        out_dir: Output directory for parsed TSVs.
+        work_root: Temporary working directory root.
+        parse_pool: Shared process pool for XML parsing.
+        delete_source: Whether to delete the source zip after parsing.
+        skip_download_if_complete: Skip download if the file is complete.
+
+    Returns:
+        WorkResult: Outcome of processing.
+    """
     part_path = _frontfile_part_path(out_dir, item.key)
     if part_path.exists():
         return WorkResult(item.key, skipped=True)
@@ -323,7 +410,21 @@ def _handle_backfile_item(
     delete_source: bool,
     done_subdir: str,
 ) -> WorkResult:
-    """One outer zip -> one `part_<xml_stem>.tsv` per inner XML; marker is the resume key."""
+    """One outer zip -> one `part_<xml_stem>.tsv` per inner XML; marker is the resume key.
+
+    Args:
+        item: The work item to process.
+        client: BDDS client instance, or None for offline mode.
+        product_id: The product identifier.
+        out_dir: Output directory for parsed TSVs.
+        work_root: Temporary working directory root.
+        parse_pool: Shared process pool for XML parsing.
+        delete_source: Whether to delete the source zip after parsing.
+        done_subdir: Subdirectory for done markers.
+
+    Returns:
+        WorkResult: Outcome of processing.
+    """
     marker = _done_marker(out_dir, done_subdir, item.key)
     if marker.exists():
         return WorkResult(item.key, skipped=True)
@@ -369,6 +470,12 @@ def _collect_local_zips(inputs: list[Path]) -> list[Path]:
 
     Directories are scanned non-recursively so the glob does not descend into
     any expanded `Root/DOC/*.zip` trees left from a previous run.
+
+    Args:
+        inputs: List of file or directory paths to scan.
+
+    Returns:
+        list[Path]: Sorted list of zip file paths.
     """
     zips: list[Path] = []
     for path in inputs:
@@ -386,6 +493,20 @@ def _build_online_items(
     config: IngestConfig,
     staging: Path,
 ) -> list[WorkItem]:
+    """Build work items from BDDS delivery metadata.
+
+    Enumerates deliveries for the configured product and creates a WorkItem
+    for each outer delivery zip. Frontfile items are assigned a global
+    chronological index via `file_idx`.
+
+    Args:
+        client: BDDS client instance.
+        config: Ingest configuration.
+        staging: Local staging directory for downloaded files.
+
+    Returns:
+        list[WorkItem]: Ordered list of work items to process.
+    """
     staging.mkdir(parents=True, exist_ok=True)
     items: list[WorkItem] = []
     file_idx = 0
@@ -435,6 +556,15 @@ def _build_online_items(
 
 
 def _build_offline_items(inputs: list[Path], config: IngestConfig) -> list[WorkItem]:
+    """Build work items from local zip files for offline processing.
+
+    Args:
+        inputs: List of local file or directory paths.
+        config: Ingest configuration.
+
+    Returns:
+        list[WorkItem]: Ordered list of work items.
+    """
     paths = sorted(_collect_local_zips(inputs), key=lambda p: p.name)
     return [
         WorkItem(
@@ -449,6 +579,15 @@ def _build_offline_items(inputs: list[Path], config: IngestConfig) -> list[WorkI
 
 
 def _frontfile_part_path(out_dir: Path, key: str) -> Path:
+    """Return the path to the frontfile part TSV.
+
+    Args:
+        out_dir: Output directory.
+        key: Outer zip stem.
+
+    Returns:
+        Path: Path to the part TSV file.
+    """
     return out_dir / f"part_{key}.tsv"
 
 
@@ -461,6 +600,14 @@ def _partition_frontfile_items(
     locally, or if its key is already recorded as applied in the target LMDB
     (`applied_parts`) - the latter is what lets local staging be deleted
     between runs without forcing a re-fetch of the whole delivery history.
+
+    Args:
+        items: All catalog work items.
+        out_dir: Output directory for part TSVs.
+        applied_parts: Frozenset of part stems already applied to the target LMDB.
+
+    Returns:
+        tuple[list[WorkItem], int]: (pending work items, count already ingested).
     """
     pending = [
         item

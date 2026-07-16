@@ -77,6 +77,12 @@ def load_applied_frontfile_parts(lmdb_path: Path) -> frozenset[str]:
     This is the durable record of what has been incorporated: the ingest step
     consults it to skip re-fetching deliveries that were already applied in a
     previous run, even after the local staging directory has been wiped.
+
+    Args:
+        lmdb_path: Path to the existing LMDB directory.
+
+    Returns:
+        Frozenset of frontfile part stems that have been applied.
     """
     if not lmdb_path.exists():
         return frozenset()
@@ -106,7 +112,15 @@ def load_applied_frontfile_parts(lmdb_path: Path) -> frozenset[str]:
 
 
 def upsert_record(existing: list[Record], record: Record) -> list[Record]:
-    """Replace the entry whose `docdb_id` matches `record[0]`, appending otherwise."""
+    """Replace the entry whose `docdb_id` matches `record[0]`, appending otherwise.
+
+    Args:
+        existing: Current list of records for the key.
+        record: New record to upsert.
+
+    Returns:
+        Updated list of records.
+    """
     docdb_id = record[0]
     for i, entry in enumerate(existing):
         if entry and entry[0] == docdb_id:
@@ -117,7 +131,15 @@ def upsert_record(existing: list[Record], record: Record) -> list[Record]:
 
 
 def remove_record(existing: list[Record], docdb_id: str) -> list[Record]:
-    """Return `existing` with any entry matching `docdb_id` removed."""
+    """Return `existing` with any entry matching `docdb_id` removed.
+
+    Args:
+        existing: Current list of records for the key.
+        docdb_id: docdb_id of the entry to remove.
+
+    Returns:
+        Filtered list of records.
+    """
     return [entry for entry in existing if not (entry and entry[0] == docdb_id)]
 
 
@@ -147,7 +169,24 @@ def apply_changelog(
     map_size: int = DEFAULT_MAP_SIZE,
     commit_every: int = DEFAULT_COMMIT_EVERY,
 ) -> ApplyStats:
-    """Apply the sorted changelog read from *src* to the LMDB at *lmdb_path*."""
+    """Apply the sorted changelog read from *src* to the LMDB at *lmdb_path*.
+
+    Args:
+        src: Iterable of changelog TSV lines (bytes or str), sorted by key
+            then seq.
+        lmdb_path: Path to the existing LMDB directory.
+        applied_parts: Optional list of frontfile part stems to record as
+            applied in the terminal meta transaction.
+        map_size: Map size for the LMDB environment.
+        commit_every: Number of keys to process between commits.
+
+    Returns:
+        ApplyStats instance with counters for the operations performed.
+
+    Raises:
+        FileNotFoundError: If the LMDB path does not exist.
+        RuntimeError: If the core build status is not `complete`.
+    """
     if not lmdb_path.exists():
         raise FileNotFoundError(f"LMDB path does not exist: {lmdb_path}")
 
@@ -188,7 +227,13 @@ def apply_changelog(
         txn = env.begin(write=True)
 
         def flush(key_bytes: bytes, working: list[Record]) -> None:
-            """Persist the accumulated record list for one key (or drop the key)."""
+            """Persist the accumulated record list for one key (or drop the key).
+
+            Args:
+                key_bytes: Binary key for the current record group.
+                working: List of records to persist. If empty, the key is
+                    deleted from the docs sub-DB.
+            """
             if working:
                 txn.put(key_bytes, msgpack.packb(working, use_bin_type=True), overwrite=True, db=docs_db)
             elif txn.delete(key_bytes, db=docs_db):

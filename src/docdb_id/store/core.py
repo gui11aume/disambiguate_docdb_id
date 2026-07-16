@@ -44,7 +44,16 @@ def load_from_tsv(
 ) -> tuple[int, int]:
     """Read sorted TSV from *src* and write to a new LMDB at *lmdb_path*.
 
-    Returns (n_docs, n_keys).
+    Args:
+        src: Iterable of TSV lines (bytes or str), already sorted by key with
+            `LC_ALL=C`.
+        lmdb_path: Path to the new LMDB directory. If it exists it is removed
+            first.
+        map_size: Map size for the LMDB environment.
+        commit_every: Commit and reopen a write transaction every N keys.
+
+    Returns:
+        Tuple of (n_docs, n_keys) written.
     """
     if lmdb_path.exists():
         if lmdb_path.is_dir():
@@ -118,7 +127,7 @@ def load_from_tsv(
                         txn.commit()
                         txn = env.begin(write=True)
                         cursor = txn.cursor(db=docs_db)
-                        logger.info("%s keys, %s docs...", f"{n_keys:,}", f"{n_docs:,}")
+                        logger.info(f"{n_keys:,} keys, {n_docs:,} docs...")
                 current_key = key
                 current_records = []
                 current_ids = set()

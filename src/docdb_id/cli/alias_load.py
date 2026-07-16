@@ -17,6 +17,19 @@ from docdb_id.store.alias import _Collision, load_alias
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Load the `alias` sub-DB from a sorted 2-column TSV.
+
+    Args:
+        argv: Command-line argument list. First element is the LMDB path; optional
+            second element is a path to a sorted 2-column TSV file (reads stdin if
+            omitted).
+
+    Returns:
+        Exit code (0 on success, 1 on usage error, 2 on alias collision).
+
+    Raises:
+        _Collision: If a key collision is detected during alias loading.
+    """
     argv = sys.argv[1:] if argv is None else argv
     if len(argv) < 1:
         print("usage: python -m docdb_id.cli.alias_load <lmdb-path> [<sorted-2col-tsv>]", file=sys.stderr)

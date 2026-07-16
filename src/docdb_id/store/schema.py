@@ -38,5 +38,9 @@ Record: TypeAlias = list[str]
 
 
 def now_iso() -> str:
-    """Return the current UTC time as an ISO 8601 string with second precision."""
+    """Return the current UTC time as an ISO 8601 string with second precision.
+
+    Returns:
+        ISO 8601 timestamp string (e.g. "2024-01-15T14:30:00+00:00").
+    """
     return datetime.now(timezone.utc).isoformat(timespec="seconds")

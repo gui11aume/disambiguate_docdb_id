@@ -17,6 +17,15 @@ from docdb_id.store.alias import prune_orphan_aliases
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Prune dangling aliases from an existing LMDB.
+
+    Args:
+        argv: Command-line argument list. Must contain exactly one element: the
+            path to the LMDB.
+
+    Returns:
+        Exit code (0 on success, 1 on usage error).
+    """
     argv = sys.argv[1:] if argv is None else argv
     if len(argv) != 1:
         print("usage: python -m docdb_id.cli.alias_gc <lmdb-path>", file=sys.stderr)

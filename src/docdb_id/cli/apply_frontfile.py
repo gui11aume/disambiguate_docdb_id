@@ -22,6 +22,15 @@ logger = logging.getLogger("docdb_id.cli.apply_frontfile")
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse command-line arguments for the apply_frontfile command.
+
+    Args:
+        argv: Command-line argument list (defaults to sys.argv[1:]).
+
+    Returns:
+        Parsed argparse.Namespace with fields lmdb, changelog, part_tsvs, map_size,
+        commit_every, and log_level.
+    """
     parser = argparse.ArgumentParser(
         prog="docdb_id.cli.apply_frontfile",
         description=__doc__,
@@ -69,6 +78,14 @@ def part_stem(path: Path) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Apply a sorted frontfile changelog TSV to an existing LMDB.
+
+    Args:
+        argv: Command-line argument list (defaults to sys.argv[1:]).
+
+    Returns:
+        Exit code (0 on success, 1 on runtime error).
+    """
     args = parse_args(argv)
     logging.basicConfig(
         level=args.log_level.upper(),

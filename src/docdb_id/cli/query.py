@@ -16,6 +16,15 @@ from docdb_id.store.query import run_query
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Look up DOCDB candidate IDs in an LMDB.
+
+    Args:
+        argv: Command-line argument list. First element is the LMDB path; optional
+            second element is an input file path (reads stdin if omitted).
+
+    Returns:
+        Exit code (0 on success, 1 on usage error).
+    """
     argv = sys.argv[1:] if argv is None else argv
     if len(argv) < 1:
         print("usage: python -m docdb_id.cli.query <lmdb> [<input>]", file=sys.stderr)
