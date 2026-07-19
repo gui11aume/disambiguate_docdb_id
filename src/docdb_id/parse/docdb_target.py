@@ -15,6 +15,8 @@ differ in how they turn the accumulated per-document state into a TSV row.
 
 from __future__ import annotations
 
+from docdb_id.utils import normalize_key
+
 # ── XML tag constants ────────────────────────────────────────────────────────
 
 _NS_EXCH = "http://www.epo.org/exchange"
@@ -34,26 +36,6 @@ _VALID_STATUS = frozenset({"A", "C", "D"})
 # LC_ALL=C sort equivalent to a numeric one.
 _SEQ_FILE_WIDTH = 8
 _SEQ_POS_WIDTH = 10
-
-
-def make_key(cc: bytes, doc_number: bytes) -> bytes:
-    """Build an LMDB key by joining a country code and a doc-number.
-
-    Leading zeros are stripped from the numeric body and the result is
-    upper-cased so keys are case-insensitive for callers (some DOCDB records
-    carry lower-case kind suffixes in the doc-number, which would otherwise
-    produce duplicate keys). Both inputs are expected to be already-trimmed
-    bytes taken straight from `<exch:exchange-document country=... doc-number=...>`.
-
-    Args:
-        cc: Two-letter country code as bytes.
-        doc_number: Document number as bytes.
-
-    Returns:
-        Upper-cased key bytes with leading zeros stripped from the
-        numeric portion.
-    """
-    return (cc + doc_number.lstrip(b"0")).upper()
 
 
 class _DocdbTargetBase:
@@ -205,7 +187,7 @@ class BackfileTarget(_DocdbTargetBase):
         if not self._docdb_id:
             return
         inv = "".join(self._inv_parts).strip()
-        key = make_key(self._country.encode(), self._doc_number.encode())
+        key = normalize_key(self._country.encode(), self._doc_number.encode())
         self.rows.append(
             key
             + b"\t"
@@ -249,7 +231,7 @@ class FrontfileTarget(_DocdbTargetBase):
         inv = "".join(self._inv_parts).strip()
         seq = f"{self._file_idx:0{_SEQ_FILE_WIDTH}d}{self._pos:0{_SEQ_POS_WIDTH}d}"
         self._pos += 1
-        key = make_key(self._country.encode(), self._doc_number.encode())
+        key = normalize_key(self._country.encode(), self._doc_number.encode())
         self.rows.append(
             key
             + b"\t"

@@ -1,4 +1,4 @@
-"""Tests for parse/docdb_target.py — key construction and SAX state machines."""
+"""Tests for parse/docdb_target.py — SAX state machines and key construction."""
 
 from __future__ import annotations
 
@@ -9,42 +9,39 @@ from docdb_id.parse.docdb_target import (
     _SEQ_POS_WIDTH,
     BackfileTarget,
     FrontfileTarget,
-    make_key,
 )
+from docdb_id.utils import normalize_key
 
-# ── make_key ────────────────────────────────────────────────────────────────────
+# ── normalize_key ────────────────────────────────────────────────────────────────────
 
 
-def test_make_key_strips_leading_zeros():
+def test_normalize_key_strips_leading_zeros():
     """Regular CC: leading zeros are stripped from the numeric body before upper-casing."""
-    assert make_key(b"US", b"00123456") == b"US123456"
+    assert normalize_key(b"US", b"00123456") == b"US123456"
 
 
-def test_make_key_upper_cases_everything():
+def test_normalize_key_upper_cases_everything():
     """Both CC and doc_number are upper-cased. Lowercase kind suffixes in
     doc_number (e.g. 'b2') appear in some DOCDB records.
     """
-    assert make_key(b"us", b"123456b2") == b"US123456B2"
+    assert normalize_key(b"us", b"123456b2") == b"US123456B2"
 
 
-def test_make_key_single_digit_doc_number():
+def test_normalize_key_single_digit_doc_number():
     """Doc_number with a single non-zero digit produces a short key."""
-    assert make_key(b"US", b"1") == b"US1"
+    assert normalize_key(b"US", b"1") == b"US1"
 
 
-def test_make_key_all_zeros_becomes_empty_suffix():
+def test_normalize_key_all_zeros_becomes_empty_suffix():
     """When doc_number is all zeros, lstrip removes everything.
     The key is just the upper-cased CC.
     """
-    assert make_key(b"US", b"00000") == b"US"
+    assert normalize_key(b"US", b"00000") == b"US"
 
 
-def test_make_key_jp_prefix_preserves_digits_after_leading_zeros():
-    """JP keys preserve the numeric part as-is (leading zeros are stripped
-    by lstrip, but JP special handling for alias normalization happens in
-    _normalize_alias, not in make_key).
-    """
-    assert make_key(b"JP", b"0123456") == b"JP123456"
+def test_normalize_key_jp_prefix_preserves_digits_after_leading_zeros():
+    """JP keys preserve the numeric part as-is."""
+    assert normalize_key(b"JP", b"0123456") == b"JP0123456"
 
 
 # ── BackfileTarget (SAX state machine) ─────────────────────────────────────────
@@ -177,7 +174,7 @@ def _parse_frontfile(xml_chunks: list[bytes], file_idx: int = 0) -> list[bytes]:
 
 
 def test_frontfile_emits_seq_token_and_op_column():
-    """Frontfile rows have 8 columns: key, seq, op, docdb_id, orig, inventor, date, family."""
+    """Frontfile rows have 8 columns: key, seq, op, docdb_id, alt, inventor, date, family."""
     xml = (
         b'<?xml version="1.0"?>'
         b'<exch:exchange-document country="US" doc-number="8000000" kind="B2"'

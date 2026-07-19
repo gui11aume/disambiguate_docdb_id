@@ -9,7 +9,7 @@ already sorted with `LC_ALL=C sort -t$'\t' -k1,1 -k2,2` so that rows are
 grouped by key and, within each key, ordered chronologically by the `seq`
 token. Each line has eight tab-separated columns:
 
-    key \t seq \t op \t docdb_id \t orig_doc_number \t inventor \t date_publ \t family_id
+    key \t seq \t op \t docdb_id \t alt_doc_number \t inventor \t date_publ \t family_id
 
 For every key we read the existing record list once, replay that key's
 operations in order, and write the result back:
@@ -22,10 +22,10 @@ operations in order, and write the result back:
 
 The `alias` sub-DB is updated in the same write transaction as `docs`:
 
-* "C" / "A": add every alias derived from `(key, orig_doc_number)` via the
+* "C" / "A": add every alias derived from `(key, alt_doc_number)` via the
   shared `docdb_id.alias.extract` helpers. On collision the existing mapping is
   kept (assumed older).
-* "D": remove orig-derived aliases that still map to this key. Key-derived
+* "D": remove alternate-ID aliases that still map to this key. Key-derived
   synonyms are removed only when the key is fully deleted from `docs`.
 
 The target LMDB core build must already be in the `complete` state. While the
@@ -45,7 +45,7 @@ from pathlib import Path
 import lmdb
 import msgpack
 
-from docdb_id.alias.extract import key_synonyms, orig_aliases
+from docdb_id.alias.extract import alt_alias, key_synonyms
 from docdb_id.store.alias import add_alias, remove_alias
 from docdb_id.store.schema import (
     ALIAS_DB_NAME,
@@ -263,7 +263,7 @@ def apply_changelog(
                 key = parts[0]
                 op = parts[2].decode("utf-8")
                 docdb_id = parts[3].decode("utf-8")
-                orig = parts[4]
+                alt = parts[4]
                 inventor = parts[5].decode("utf-8")
                 date_publ = parts[6].decode("utf-8")
                 family_id = parts[7].decode("utf-8")
@@ -285,16 +285,18 @@ def apply_changelog(
                     working = upsert_record(working, [docdb_id, inventor, date_publ, family_id])
                     for alias in key_synonyms(key):
                         add_alias(txn, alias_db, docs_db, alias, key)
-                    for alias in orig_aliases(key, orig).aliases:
-                        add_alias(txn, alias_db, docs_db, alias, key)
+                    derived = alt_alias(key, alt).alias
+                    if derived is not None:
+                        add_alias(txn, alias_db, docs_db, derived, key)
                     if op == STATUS_AMEND:
                         stats.amended += 1
                     else:
                         stats.created += 1
                 elif op == STATUS_DELETE:
                     working = remove_record(working, docdb_id)
-                    for alias in orig_aliases(key, orig).aliases:
-                        remove_alias(txn, alias_db, alias, key)
+                    derived = alt_alias(key, alt).alias
+                    if derived is not None:
+                        remove_alias(txn, alias_db, derived, key)
                     stats.deleted += 1
                 else:
                     logger.warning(f"unknown op {op!r} on line {line_no} for {docdb_id}; skipping")

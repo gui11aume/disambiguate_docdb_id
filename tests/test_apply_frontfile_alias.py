@@ -9,7 +9,7 @@ import lmdb
 import msgpack
 import pytest
 
-from docdb_id.alias.extract import orig_aliases
+from docdb_id.alias.extract import alt_alias
 from docdb_id.store.apply_frontfile import apply_changelog, load_applied_frontfile_parts
 from docdb_id.store.schema import (
     ALIAS_DB_NAME,
@@ -30,7 +30,8 @@ def _seed_lmdb(path: Path) -> None:
 
     key = b"US8888888"
     record = msgpack.packb([["US8888888A1", "Inventor", "20200101", "1"]], use_bin_type=True)
-    alias = orig_aliases(key, b"888888-1").aliases[0]
+    alias = alt_alias(key, b"888888-1").alias
+    assert alias is not None
 
     with env.begin(write=True) as txn:
         txn.put(key, record, db=docs_db)
@@ -56,7 +57,7 @@ def lmdb_path(tmp_path: Path) -> Path:
     return path
 
 
-def test_apply_create_adds_orig_alias(lmdb_path: Path):
+def test_apply_create_adds_alternate_id_alias(lmdb_path: Path):
     changelog = io.BytesIO(
         b"US7777777\t000000010000000001\tC\tUS7777777A1\t777777-1\tInv\t20210101\t2\n"
     )
@@ -65,8 +66,9 @@ def test_apply_create_adds_orig_alias(lmdb_path: Path):
     assert _read_alias(lmdb_path, b"US7777771") == b"US7777777"
 
 
-def test_apply_delete_removes_orig_alias(lmdb_path: Path):
-    alias = orig_aliases(b"US8888888", b"888888-1").aliases[0]
+def test_apply_delete_removes_alternate_id_alias(lmdb_path: Path):
+    alias = alt_alias(b"US8888888", b"888888-1").alias
+    assert alias is not None
     changelog = io.BytesIO(
         b"US8888888\t000000010000000001\tD\tUS8888888A1\t888888-1\tInv\t20200101\t1\n"
     )
@@ -76,7 +78,8 @@ def test_apply_delete_removes_orig_alias(lmdb_path: Path):
 
 
 def test_apply_delete_keeps_alias_when_mapped_elsewhere(lmdb_path: Path):
-    alias = orig_aliases(b"US8888888", b"888888-1").aliases[0]
+    alias = alt_alias(b"US8888888", b"888888-1").alias
+    assert alias is not None
     env = lmdb.open(str(lmdb_path), map_size=64 * 1024 * 1024, subdir=True, max_dbs=3)
     alias_db = env.open_db(ALIAS_DB_NAME)
     with env.begin(write=True) as txn:

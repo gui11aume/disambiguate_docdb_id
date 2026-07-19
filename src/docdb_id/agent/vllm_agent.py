@@ -23,11 +23,14 @@ Example usage:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
+from typing import Any
 
-import httpx
+from mcp import ClientSession
+from mcp.client.streamable_http import streamablehttp_client
 from openai import OpenAI
 
 from .default_prompt import DEFAULT_SYSTEM_PROMPT
@@ -40,105 +43,113 @@ MODEL = os.environ.get("VLLM_MODEL", "Qwen/Qwen3.6-35B-A3B-FP8")
 
 SYSTEM_PROMPT = os.environ.get("SYSTEM_PROMPT", DEFAULT_SYSTEM_PROMPT)
 
-TOOLS = [
-    {
+
+def _mcp_url() -> str:
+    """Return the DOCDB MCP streamable-HTTP endpoint URL."""
+    return f"{DOCDB_API_URL.rstrip('/')}/mcp"
+
+
+def _mcp_tool_to_openai(tool: Any) -> dict:
+    """Convert an MCP tool definition to OpenAI function-calling format.
+
+    Args:
+        tool: An MCP `Tool` from `list_tools`.
+
+    Returns:
+        OpenAI-compatible tool dict.
+    """
+    return {
         "type": "function",
         "function": {
-            "name": "resolve_docdb_id",
-            "description": (
-                "Resolve a patent publication number to its canonical DOCDB record(s).\n"
-                "\n"
-                "IMPORTANT — strip the kind code before calling:\n"
-                '    "US8000000B2"  → cc="US",  number="8000000"\n'
-                '    "EP1234567A1"  → cc="EP",  number="1234567"\n'
-                '    "WO2013143024" → cc="WO",  number="2013143024"\n'
-                "The kind code (trailing letter+digit suffix like B2, A1, A2, U1) is NEVER\n"
-                "part of the number argument. Passing it causes an empty result, not an error.\n"
-                "\n"
-                'Also strip formatting: "US 8,000,000" → cc="US", number="8000000".\n'
-                "\n"
-                "Leading zeros in the number are ignored: '08000000' and '8000000' are equivalent.\n"
-                "\n"
-                "If you get an empty list:\n"
-                "  1. Check that you stripped the kind code (most common mistake).\n"
-                "  2. Consider common transcription errors: O/0, I/1, S/5, B/8.\n"
-                "     Try plausible substitutions in the number.\n"
-                "  3. Use all context available to you (inventor name, year) to\n"
-                "     reconstruct the most likely number and retry.\n"
-                "\n"
-                "Processing the output:\n"
-                "  The tool returns the first inventor and publication date. These map\n"
-                "  directly onto how patents are cited in practice: 'Greenberg et al. (2011)'\n"
-                "  should match inventor 'ROBERT J. GREENBERG' and date_publ starting with '2011'.\n"
-                "  If you get multiple records, compare inventor names and publication dates\n"
-                "  to select the most likely match. The tool gives you candidates, not a verdict.\n"
-                "\n"
-                "Error codes (returned inline, not as exceptions):\n"
-                "  - cc_does_not_exist: cc is not a recognized DOCDB country code.\n"
-                "  - number_is_not_alnum: number contains illegal characters — strip them.\n"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "cc": {
-                        "type": "string",
-                        "description": (
-                            "Two-letter DOCDB country code, e.g. 'US', 'EP', 'WO', "
-                            "'DE', 'JP', 'FR', 'GB', 'CN', 'KR'. Exactly 2 characters."
-                        ),
-                    },
-                    "number": {
-                        "type": "string",
-                        "description": (
-                            "Publication number without kind code or country prefix. "
-                            "Digits and letters only — no hyphens, spaces, commas, or slashes."
-                        ),
-                    },
-                },
-                "required": ["cc", "number"],
-            },
+            "name": tool.name,
+            "description": tool.description or "",
+            "parameters": tool.inputSchema,
         },
     }
-]
 
 
-def _call_resolve_docdb_id(cc: str, number: str) -> list[dict]:
-    """Call the DOCDB API query endpoint.
-
-    Args:
-        cc: Two-letter DOCDB country code.
-        number: Publication number without kind code.
-
-    Returns:
-        Parsed JSON response as a list of dict records.
-
-    Raises:
-        httpx.HTTPStatusError: If the API returns a non-2xx status.
-    """
-    url = f"{DOCDB_API_URL.rstrip('/')}/query"
-    resp = httpx.get(url, params={"cc": cc, "number": number}, timeout=10.0)
-    resp.raise_for_status()
-    return resp.json()
-
-
-def _dispatch_tool(name: str, arguments: str) -> str:
-    """Dispatch a tool call to the appropriate handler.
+def _tool_result_payload(result: Any) -> Any:
+    """Extract a JSON-serializable payload from an MCP `CallToolResult`.
 
     Args:
-        name: Tool function name.
-        arguments: JSON-encoded tool arguments.
+        result: MCP tool call result.
 
     Returns:
-        JSON-encoded tool result.
+        Structured tool payload when available, otherwise parsed text content.
 
     Raises:
-        ValueError: Unknown tool name.
+        RuntimeError: If the MCP tool reported an error or returned no usable payload.
     """
-    args = json.loads(arguments)
-    if name == "resolve_docdb_id":
-        result = _call_resolve_docdb_id(args["cc"], args["number"])
-        return json.dumps(result)
-    raise ValueError(f"unknown tool: {name}")
+    if result.isError:
+        texts = [c.text for c in result.content if hasattr(c, "text")]
+        detail = "; ".join(texts) if texts else "unknown MCP tool error"
+        raise RuntimeError(f"MCP tool failed: {detail}")
+
+    structured = result.structuredContent
+    if isinstance(structured, dict) and "result" in structured:
+        return structured["result"]
+    if structured is not None:
+        return structured
+
+    for block in result.content:
+        text = getattr(block, "text", None)
+        if text is None:
+            continue
+        return json.loads(text)
+
+    raise RuntimeError("MCP tool returned no usable payload")
+
+
+async def _run_async(user_message: str, system_prompt: str | None) -> str:
+    """Run the agent loop against the DOCDB MCP server.
+
+    Args:
+        user_message: The user's request.
+        system_prompt: Optional system prompt to set context.
+
+    Returns:
+        The model's final text response after all tool calls are resolved.
+    """
+    client = OpenAI(base_url=VLLM_BASE_URL, api_key="x")
+
+    async with streamablehttp_client(_mcp_url()) as (read, write, _get_session_id):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            listed = await session.list_tools()
+            tools = [_mcp_tool_to_openai(t) for t in listed.tools]
+
+            messages: list[dict] = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            messages.append({"role": "user", "content": user_message})
+
+            while True:
+                response = client.chat.completions.create(
+                    model=MODEL,
+                    messages=messages,
+                    tools=tools,
+                    tool_choice="auto",
+                )
+                msg = response.choices[0].message
+                messages.append(msg)
+
+                if not msg.tool_calls:
+                    return msg.content
+
+                for tc in msg.tool_calls:
+                    args = json.loads(tc.function.arguments)
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug("tool call: %s(%s)", tc.function.name, tc.function.arguments)
+                    result = await session.call_tool(tc.function.name, args)
+                    payload = _tool_result_payload(result)
+                    content = json.dumps(payload)
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug("tool result: %s", content)
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": content,
+                    })
 
 
 def run(user_message: str, system_prompt: str | None = None) -> str:
@@ -151,37 +162,7 @@ def run(user_message: str, system_prompt: str | None = None) -> str:
     Returns:
         The model's final text response after all tool calls are resolved.
     """
-    client = OpenAI(base_url=VLLM_BASE_URL, api_key="x")
-
-    messages: list[dict] = []
-    if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
-    messages.append({"role": "user", "content": user_message})
-
-    while True:
-        response = client.chat.completions.create(
-            model=MODEL,
-            messages=messages,
-            tools=TOOLS,
-            tool_choice="auto",
-        )
-        msg = response.choices[0].message
-        messages.append(msg)
-
-        if not msg.tool_calls:
-            return msg.content
-
-        for tc in msg.tool_calls:
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug("tool call: %s(%s)", tc.function.name, tc.function.arguments)
-            result = _dispatch_tool(tc.function.name, tc.function.arguments)
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug("tool result: %s", result)
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tc.id,
-                "content": result,
-            })
+    return asyncio.run(_run_async(user_message, system_prompt))
 
 
 def main() -> None:

@@ -5,6 +5,11 @@ delivery zip expands to `Root/DOC/*.zip`, and each inner zip holds exactly one
 XML. A bounded queue of coordinator threads each owns one outer zip from fetch
 through cleanup; a shared process pool parses inner XML into TSV parts.
 
+Inner zips are never all expanded at once: each is copied out of the outer
+archive, its XML is parsed, and both are deleted before the next inner zip is
+touched. Peak scratch disk per in-flight outer is therefore one inner zip plus
+one XML (plus the outer zip itself until the part finishes).
+
 Resume differs by product, reflecting what each can verify without downloading:
 
 * Backfile: one TSV per inner XML (`part_<xml_stem>.tsv`) plus a per-outer-zip
@@ -25,6 +30,7 @@ import shutil
 import tempfile
 import threading
 import zipfile
+from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -105,29 +111,32 @@ def _parse_backfile_xml(job: tuple[str, str]) -> str | None:
         return f"{xml_path.name}: {exc}"
 
 
-def _parse_frontfile_part(job: tuple[list[str], str, int]) -> str | None:
-    """Parse all inner XMLs of one delivery part into a single changelog TSV.
+def _parse_frontfile_part(job: tuple[str, str, int, str]) -> tuple[str | None, int]:
+    """Parse one outer delivery zip into a single changelog TSV.
 
-    Every inner XML is fed through *one* `FrontfileTarget` so the per-document
-    position counter behind the `seq` token runs continuously across the whole
-    part; `file_idx` (the part's global chronological index) is the high half
-    of that token. Written via a sibling `*.tmp` and atomically renamed, so an
-    interrupted run never leaves a partial part that resume would treat as done.
+    Streams each inner zip in turn (extract XML -> feed parser -> delete) so
+    peak scratch disk is one inner zip plus one XML. Every inner XML is fed
+    through *one* `FrontfileTarget` so the per-document position counter behind
+    the `seq` token runs continuously across the whole part; `file_idx` (the
+    part's global chronological index) is the high half of that token. Written
+    via a sibling `*.tmp` and atomically renamed, so an interrupted run never
+    leaves a partial part that resume would treat as done.
 
     Args:
-        job: Tuple of (xml_path_strings, part_output_path, file_idx).
+        job: Tuple of (container_path, part_output_path, file_idx, work_dir).
 
     Returns:
-        str | None: Error message if parsing failed, None on success.
+        tuple[str | None, int]: (error message or None, number of XMLs seen).
     """
-    xml_strs, part_path_str, file_idx = job
+    container_str, part_path_str, file_idx, work_dir_str = job
     part_path = Path(part_path_str)
     tmp_path = part_path.with_name(f"{part_path.name}.tmp")
     try:
         target = FrontfileTarget(file_idx)
-        for xml_str in xml_strs:
+
+        def handle_xml(xml_path: Path) -> None:
             parser = LET.XMLParser(target=target, recover=True, huge_tree=True, resolve_entities=False)
-            with open_xml(Path(xml_str)) as raw:
+            with open_xml(xml_path) as raw:
                 reader = EntityNormalizingReader(raw)
                 while True:
                     chunk = reader.read(_CHUNK)
@@ -135,59 +144,95 @@ def _parse_frontfile_part(job: tuple[list[str], str, int]) -> str | None:
                         break
                     parser.feed(chunk)
             parser.close()
+
+        n_xml, expand_errors = for_each_nested_xml(Path(container_str), Path(work_dir_str), handle_xml)
+        if expand_errors:
+            return expand_errors[0], n_xml
         if not target.rows:
-            logger.warning("parse_frontfile_part: %s produced 0 rows (lxml recover may have eaten errors)", part_path.name)
+            logger.warning(
+                "parse_frontfile_part: %s produced 0 rows (lxml recover may have eaten errors)",
+                part_path.name,
+            )
         with tmp_path.open("wb") as out:
             for row in target.rows:
                 out.write(row)
         tmp_path.replace(part_path)
-        return None
+        return None, n_xml
     except Exception as exc:
         unlink_quietly(tmp_path)
-        return f"{part_path.name}: {exc}"
+        return f"{part_path.name}: {exc}", 0
 
 
 # ── Container expansion ──────────────────────────────────────────────────────
 
 
-def expand_nested_zip(container_path: Path, work_dir: Path) -> tuple[list[Path], list[str]]:
-    """Outer zip -> `Root/DOC/*.zip` -> one XML each.
+def for_each_nested_xml(
+    container_path: Path,
+    work_dir: Path,
+    handle_xml: Callable[[Path], None],
+) -> tuple[int, list[str]]:
+    """Outer zip -> one inner zip at a time -> its XML -> `handle_xml` -> delete.
 
-    Shared by both products: backfile and frontfile deliveries have the same
-    nested layout.
+    Never `extractall`s the outer delivery. For each `*.zip` member: copy that
+    inner zip to `work_dir`, extract its XML member(s), delete the inner zip,
+    call `handle_xml` on each XML, then delete the XML before moving on. Peak
+    scratch under `work_dir` is therefore one inner zip plus one XML.
 
     Args:
         container_path: Path to the outer delivery zip.
-        work_dir: Temporary directory for extraction.
+        work_dir: Temporary directory for the current inner zip / XML.
+        handle_xml: Callback invoked with the path to each extracted XML. Must
+            finish reading the file before returning; the XML is unlinked after.
 
     Returns:
-        tuple[list[Path], list[str]]: Tuple of (xml_paths, error_messages).
+        tuple[int, list[str]]: (number of XMLs handed to `handle_xml`, errors).
     """
     errors: list[str] = []
+    n_xml = 0
     try:
-        with zipfile.ZipFile(container_path) as zf:
-            zf.extractall(work_dir)
+        outer = zipfile.ZipFile(container_path)
     except (zipfile.BadZipFile, FileNotFoundError, PermissionError) as exc:
-        return [], [f"expand {container_path.name}: {exc}"]
+        return 0, [f"expand {container_path.name}: {exc}"]
 
-    xml_dir = work_dir / "_xml"
-    xml_dir.mkdir()
-    xml_paths: list[Path] = []
-    for inner_zip in sorted(work_dir.rglob("*.zip")):
-        try:
-            with zipfile.ZipFile(inner_zip) as zf:
-                for member in zf.namelist():
-                    if not member.lower().endswith(".xml"):
-                        continue
-                    target = xml_dir / Path(member).name
-                    with zf.open(member) as src, target.open("wb") as dst:
-                        shutil.copyfileobj(src, dst, length=_CHUNK)
-                    xml_paths.append(target)
-        except (zipfile.BadZipFile, PermissionError) as exc:
-            errors.append(f"{inner_zip.name}: {exc}")
-        finally:
-            unlink_quietly(inner_zip)
-    return xml_paths, errors
+    work_dir.mkdir(parents=True, exist_ok=True)
+    with outer:
+        inner_names = sorted(
+            name
+            for name in outer.namelist()
+            if name.lower().endswith(".zip") and not name.endswith("/")
+        )
+        for inner_name in inner_names:
+            inner_path = work_dir / Path(inner_name).name
+            try:
+                with outer.open(inner_name) as src, inner_path.open("wb") as dst:
+                    shutil.copyfileobj(src, dst, length=_CHUNK)
+                iz = zipfile.ZipFile(inner_path)
+            except (zipfile.BadZipFile, PermissionError, OSError) as exc:
+                errors.append(f"{Path(inner_name).name}: {exc}")
+                unlink_quietly(inner_path)
+                continue
+
+            try:
+                with iz:
+                    for member in iz.namelist():
+                        if not member.lower().endswith(".xml"):
+                            continue
+                        xml_path = work_dir / Path(member).name
+                        try:
+                            with iz.open(member) as src, xml_path.open("wb") as dst:
+                                shutil.copyfileobj(src, dst, length=_CHUNK)
+                        except (zipfile.BadZipFile, PermissionError, OSError) as exc:
+                            errors.append(f"{Path(inner_name).name}: {exc}")
+                            unlink_quietly(xml_path)
+                            continue
+                        try:
+                            handle_xml(xml_path)
+                            n_xml += 1
+                        finally:
+                            unlink_quietly(xml_path)
+            finally:
+                unlink_quietly(inner_path)
+    return n_xml, errors
 
 
 # ── Work items and results ───────────────────────────────────────────────────
@@ -381,18 +426,15 @@ def _handle_frontfile_item(
 
     work = Path(tempfile.mkdtemp(prefix=f"{item.key}_", dir=work_root))
     try:
-        xml_paths, errors = expand_nested_zip(item.local_path, work)
-        # Any expansion failure leaves the part TSV unwritten so a later run
-        # retries the whole part (presence of the TSV must mean "fully done").
-        if errors:
-            return WorkResult(item.key, n_xml=len(xml_paths), errors=errors)
-
-        xml_strs = [str(p) for p in sorted(xml_paths, key=lambda p: p.name)]
-        job = (xml_strs, str(part_path), item.file_idx)
-        parse_err = parse_pool.submit(_parse_frontfile_part, job).result()
+        # Expansion and parse share one worker so FrontfileTarget can keep a
+        # continuous seq counter; for_each_nested_xml keeps only one XML on disk.
+        job = (str(item.local_path), str(part_path), item.file_idx, str(work))
+        parse_err, n_xml = parse_pool.submit(_parse_frontfile_part, job).result()
+        # Any failure leaves the part TSV unwritten so a later run retries the
+        # whole part (presence of the TSV must mean "fully done").
         if parse_err:
-            return WorkResult(item.key, n_xml=len(xml_paths), errors=[parse_err])
-        return WorkResult(item.key, n_xml=len(xml_paths), n_parsed=len(xml_paths))
+            return WorkResult(item.key, n_xml=n_xml, errors=[parse_err])
+        return WorkResult(item.key, n_xml=n_xml, n_parsed=n_xml)
     finally:
         shutil.rmtree(work, ignore_errors=True)
         if delete_source:
@@ -437,25 +479,28 @@ def _handle_backfile_item(
 
     work = Path(tempfile.mkdtemp(prefix=f"{item.key}_", dir=work_root))
     errors: list[str] = []
+    n_parsed = 0
     try:
-        xml_paths, expand_errors = expand_nested_zip(item.local_path, work)
-        errors.extend(expand_errors)
 
-        jobs: list[tuple[str, str]] = []
-        for xml_path in sorted(xml_paths, key=lambda p: p.name):
+        def handle_xml(xml_path: Path) -> None:
+            nonlocal n_parsed
             part = out_dir / f"part_{xml_path.stem}.tsv"
             if part.exists():
-                continue
-            jobs.append((str(xml_path), str(part)))
-
-        for future in [parse_pool.submit(_parse_backfile_xml, job) for job in jobs]:
-            parse_err = future.result()
+                return
+            # Wait for the parse before returning so for_each_nested_xml can
+            # delete this XML before extracting the next inner zip.
+            parse_err = parse_pool.submit(_parse_backfile_xml, (str(xml_path), str(part))).result()
             if parse_err:
                 errors.append(parse_err)
+            else:
+                n_parsed += 1
+
+        n_xml, expand_errors = for_each_nested_xml(item.local_path, work, handle_xml)
+        errors.extend(expand_errors)
 
         if not errors:
             marker.touch()
-        return WorkResult(item.key, n_xml=len(xml_paths), n_parsed=len(jobs), errors=errors)
+        return WorkResult(item.key, n_xml=n_xml, n_parsed=n_parsed, errors=errors)
     finally:
         shutil.rmtree(work, ignore_errors=True)
         if delete_source:

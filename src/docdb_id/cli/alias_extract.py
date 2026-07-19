@@ -46,7 +46,6 @@ def main(argv: list[str] | None = None) -> int:
         n_zero_stripped,
         n_wo_two_digit_year,
         n_jp_era,
-        n_jp_era_padded,
         n_skipped_equal,
         n_skipped_pattern,
     ) = counts
@@ -56,7 +55,6 @@ def main(argv: list[str] | None = None) -> int:
         f"{n_zero_stripped:,} zero-stripped key aliases, "
         f"{n_wo_two_digit_year:,} WO two-digit-year aliases, "
         f"{n_jp_era:,} JP era aliases, "
-        f"{n_jp_era_padded:,} JP era padded aliases, "
         f"{n_skipped_equal:,} skipped (alias == key), "
         f"{n_skipped_pattern:,} skipped (alias pattern)",
         file=sys.stderr,
