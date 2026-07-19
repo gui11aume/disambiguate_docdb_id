@@ -29,7 +29,7 @@ NJOBS   ?= $(shell echo $$(( $(NCPU) < 8 ? $(NCPU) : 8 )))
 # plus its expanded XML to peak disk use, so the backfile never fully lands on
 # disk. Keep small to bound the footprint; raise to overlap more downloads with
 # parsing when you have disk to spare.
-INFLIGHT ?= 2
+INFLIGHT ?= 1
 
 # Frontfile deliveries are weekly and small, so there's little to gain from
 # overlapping downloads; default to one at a time.
