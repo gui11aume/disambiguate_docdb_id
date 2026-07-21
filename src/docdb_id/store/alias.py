@@ -43,6 +43,7 @@ from docdb_id.store.schema import (
     META_KEY_ALIAS_LAST_UPDATED,
     META_KEY_ALIAS_NO_DANGLING,
     now_iso,
+    write_map_size,
 )
 
 logger = logging.getLogger("docdb_id.store.alias")
@@ -235,7 +236,7 @@ def load_alias(
 def prune_orphan_aliases(
     lmdb_path: Path,
     *,
-    map_size: int = DEFAULT_MAP_SIZE,
+    map_size: int | None = None,
     commit_every: int = DEFAULT_COMMIT_EVERY,
 ) -> tuple[int, int]:
     """Delete aliases whose target key no longer exists in the `docs` sub-DB.
@@ -250,7 +251,8 @@ def prune_orphan_aliases(
 
     Args:
         lmdb_path: Path to the existing LMDB directory.
-        map_size: Map size for the LMDB environment.
+        map_size: Map size for the LMDB environment. Defaults to the current
+            data.mdb size plus `DEFAULT_MAP_HEADROOM`.
         commit_every: Commit and reopen a write transaction every N deletions.
 
     Returns:
@@ -261,6 +263,9 @@ def prune_orphan_aliases(
     """
     if not lmdb_path.exists():
         raise FileNotFoundError(f"{lmdb_path} does not exist; build the docs sub-DB first.")
+
+    if map_size is None:
+        map_size = write_map_size(lmdb_path)
 
     env = lmdb.open(
         str(lmdb_path),

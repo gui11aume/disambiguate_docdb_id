@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 
 from docdb_id.store.apply_frontfile import apply_changelog
-from docdb_id.store.schema import DEFAULT_COMMIT_EVERY, DEFAULT_MAP_SIZE
+from docdb_id.store.schema import DEFAULT_COMMIT_EVERY, DEFAULT_MAP_HEADROOM, write_map_size
 
 logger = logging.getLogger("docdb_id.cli.apply_frontfile")
 
@@ -56,8 +56,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--map-size",
         type=int,
-        default=DEFAULT_MAP_SIZE,
-        help=f"LMDB map_size in bytes (default: {DEFAULT_MAP_SIZE}). Files are sparse, this is only an upper bound.",
+        default=None,
+        help=(
+            "LMDB map_size in bytes. Default: current data.mdb size + "
+            f"{DEFAULT_MAP_HEADROOM} (headroom for in-place growth)."
+        ),
     )
     parser.add_argument(
         "--commit-every",
@@ -93,6 +96,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     applied_parts = [part_stem(path) for path in args.part_tsvs]
+    map_size = args.map_size if args.map_size is not None else write_map_size(args.lmdb)
     try:
         if args.changelog is not None:
             with args.changelog.open("rb") as fh:
@@ -100,7 +104,7 @@ def main(argv: list[str] | None = None) -> int:
                     fh,
                     args.lmdb,
                     applied_parts=applied_parts,
-                    map_size=args.map_size,
+                    map_size=map_size,
                     commit_every=args.commit_every,
                 )
         else:
@@ -108,7 +112,7 @@ def main(argv: list[str] | None = None) -> int:
                 sys.stdin.buffer,
                 args.lmdb,
                 applied_parts=applied_parts,
-                map_size=args.map_size,
+                map_size=map_size,
                 commit_every=args.commit_every,
             )
     except RuntimeError as exc:

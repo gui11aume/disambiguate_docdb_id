@@ -15,10 +15,11 @@ FRONTFILE_STAGING ?= $(STAGE)/frontfile_download
 FRONTFILE_WORK    ?= $(STAGE)/frontfile_work
 FRONTFILE_SORTED  ?= $(STAGE)/frontfile_sorted.tsv
 
-# Derived backfile artifacts.
-ALIAS_SORTED ?= $(STAGE)/alias_sorted.tsv
-CORE_DONE    ?= $(LMDB_OUT)/.core.done
-ALIAS_DONE   ?= $(LMDB_OUT)/.alias.done
+# Backfile load sentinels and derived staging (distinct from frontfile, which
+# updates the same LMDB sub-DBs but records progress in the meta sub-DB).
+BACKFILE_ALIAS_SORTED ?= $(STAGE)/backfile_alias_sorted.tsv
+BACKFILE_CORE_DONE    ?= $(LMDB_OUT)/.backfile.core.done
+BACKFILE_ALIAS_DONE   ?= $(LMDB_OUT)/.backfile.alias.done
 
 # Worker processes for XML parsing. For a single cold SATA disk, NJOBS=1 or 2 is
 # often fastest; raise for SSD/NVMe or when input and output live on separate disks.
@@ -54,7 +55,7 @@ cat_parts = find $(1) -name '*.tsv' -print0 | xargs -0 cat
 
 # ── Phony targets ─────────────────────────────────────────────────────────────
 .PHONY: default all install lint test \
-        backfile ingest-backfile backfile-core backfile-alias \
+        backfile ingest-backfile backfile-core backfile-alias compact \
         frontfile ingest-frontfile apply-frontfile prune-aliases \
         ingest ingest-backfile ingest-frontfile update query show-meta clean distclean
 
@@ -75,8 +76,15 @@ test:
 
 
 # ── Backfile pipeline (full snapshot) ─────────────────────────────────────────
+# Load docs + alias at DEFAULT_MAP_SIZE (~100 GiB), then compact to dense size
+# (~12 GiB) so the tree is small enough to upload to the VPS.
 apply-backfile: backfile-alias
+	$(MAKE) compact
 
+# Collapse unused LMDB pages. Run on the build host after apply-backfile; the
+# VPS does not have headroom for a second full copy.
+compact: | install
+	$(PYTHON) -m docdb_id.cli.compact $(LMDB_OUT)
 # Download, expand, parse, and clean up the backfile into unsorted part TSVs.
 # This target is sentinel-based because a backfile delivery is a fixed snapshot:
 # once every outer zip has been successfully parsed, the part set is complete.
@@ -94,9 +102,9 @@ $(BACKFILE_PARTS)/.done: | install
 
 # Sort all backfile parts by canonical key and load the docs sub-DB. The loader
 # wipes and recreates LMDB_OUT, so the sentinel is written only afterwards.
-backfile-core: $(CORE_DONE)
+backfile-core: $(BACKFILE_CORE_DONE)
 
-$(CORE_DONE): $(BACKFILE_PARTS)/.done
+$(BACKFILE_CORE_DONE): $(BACKFILE_PARTS)/.done
 	mkdir -p $(dir $(LMDB_OUT))
 	$(call cat_parts,$(BACKFILE_PARTS)) \
 	    | $(SORT) $(SORTOPTS) -t $$'\t' -k1,1 \
@@ -105,20 +113,20 @@ $(CORE_DONE): $(BACKFILE_PARTS)/.done
 
 # Project the backfile parts into alias candidates, sort by (alias, date), keep
 # the oldest mapping per alias, and strip the date before loading the alias DB.
-$(ALIAS_SORTED): $(BACKFILE_PARTS)/.done
+$(BACKFILE_ALIAS_SORTED): $(BACKFILE_PARTS)/.done
 	$(call cat_parts,$(BACKFILE_PARTS)) \
 	    | $(PYTHON) -m docdb_id.cli.alias_extract \
 	    | $(SORT) $(SORTOPTS) -t $$'\t' -k1,1 -k3,3 \
 	    | awk -F'\t' '$$1 != p { print; p = $$1 }' \
-	    | cut -f1,2 > $(ALIAS_SORTED)
-	@echo "$(ALIAS_SORTED): $$(wc -l < $(ALIAS_SORTED)) rows"
+	    | cut -f1,2 > $(BACKFILE_ALIAS_SORTED)
+	@echo "$(BACKFILE_ALIAS_SORTED): $$(wc -l < $(BACKFILE_ALIAS_SORTED)) rows"
 
 # Load the alias sub-DB into the existing LMDB env. The loader is idempotent: it
 # drops and recreates the alias DB before re-loading.
-backfile-alias: $(ALIAS_DONE)
+backfile-alias: $(BACKFILE_ALIAS_DONE)
 
-$(ALIAS_DONE): $(ALIAS_SORTED) $(CORE_DONE)
-	$(PYTHON) -m docdb_id.cli.alias_load $(LMDB_OUT) $(ALIAS_SORTED)
+$(BACKFILE_ALIAS_DONE): $(BACKFILE_ALIAS_SORTED) $(BACKFILE_CORE_DONE)
+	$(PYTHON) -m docdb_id.cli.alias_load $(LMDB_OUT) $(BACKFILE_ALIAS_SORTED)
 	touch $@
 
 
@@ -138,18 +146,21 @@ ingest-frontfile: | install
 	    --lmdb $(LMDB_OUT)
 	@echo "$(FRONTFILE_PARTS): $$(find $(FRONTFILE_PARTS) -name '*.tsv' | wc -l) parts"
 
-# Sort the accumulated changelog parts by (key, seq), then apply them to the
-# docs sub-DB and record the applied frontfile part stems in the meta sub-DB.
+# Sort the accumulated changelog parts by (key, seq), then apply them in place
+# to the docs sub-DB and record the applied frontfile part stems in the meta
+# sub-DB. Writers open with data.mdb size + headroom (not the 100 GiB backfile
+# map) so a compacted VPS DB is not re-inflated.
 #
-# Deliberately does not list $(ALIAS_DONE) as a prerequisite: that would pull
-# in the full backfile chain ($(ALIAS_SORTED), $(CORE_DONE),
-# $(BACKFILE_PARTS)/.done) whenever any of those staging files are missing,
-# even if the alias DB is already loaded — e.g. after `make clean`, or on a
-# host that only ever received the finished LMDB. Frontfile updates apply to
-# an already-built LMDB and must never trigger a backfile rebuild; if the
-# alias DB really isn't loaded yet, fail fast instead of silently re-deriving it.
+# Deliberately does not list $(BACKFILE_ALIAS_DONE) as a prerequisite: that
+# would pull in the full backfile chain ($(BACKFILE_ALIAS_SORTED),
+# $(BACKFILE_CORE_DONE), $(BACKFILE_PARTS)/.done) whenever any of those staging
+# files are missing, even if the alias DB is already loaded — e.g. after
+# `make clean`, or on a host that only ever received the finished LMDB.
+# Frontfile updates apply to an already-built LMDB and must never trigger a
+# backfile rebuild; if the backfile alias load sentinel is missing, fail fast
+# instead of silently re-deriving it.
 apply-frontfile: | install
-	@test -f $(ALIAS_DONE) || { echo "error: $(ALIAS_DONE) missing — run 'make backfile-alias' first" >&2; exit 1; }
+	@test -f $(BACKFILE_ALIAS_DONE) || { echo "error: $(BACKFILE_ALIAS_DONE) missing — run 'make backfile-alias' first" >&2; exit 1; }
 	$(MAKE) ingest-frontfile
 	$(call cat_parts,$(FRONTFILE_PARTS)) \
 	    | $(SORT) $(SORTOPTS) -t $$'\t' -k1,1 -k2,2 > $(FRONTFILE_SORTED)
@@ -172,7 +183,7 @@ prune-aliases: | install
 
 # ── Ad-hoc lookups ────────────────────────────────────────────────────────────
 # Pipe TSV (free-text <TAB> "<candidate-id>") on stdin, or pass INPUT=<file>.
-query: $(ALIAS_DONE) | install
+query: $(BACKFILE_ALIAS_DONE) | install
 	$(PYTHON) -m docdb_id.cli.query $(LMDB_OUT) $(INPUT)
 
 # Dump the LMDB meta sub-DB (build status, timestamps, applied frontfile parts).

@@ -52,7 +52,6 @@ from docdb_id.store.schema import (
     BUILD_STATUS_COMPLETE,
     BUILD_STATUS_IN_PROGRESS,
     DEFAULT_COMMIT_EVERY,
-    DEFAULT_MAP_SIZE,
     DOCS_DB_NAME,
     FRONTFILE_APPLIED_PREFIX,
     META_DB_NAME,
@@ -66,6 +65,7 @@ from docdb_id.store.schema import (
     STATUS_DELETE,
     Record,
     now_iso,
+    write_map_size,
 )
 
 logger = logging.getLogger("docdb_id.store.apply_frontfile")
@@ -166,7 +166,7 @@ def apply_changelog(
     lmdb_path: Path,
     *,
     applied_parts: list[str] | None = None,
-    map_size: int = DEFAULT_MAP_SIZE,
+    map_size: int | None = None,
     commit_every: int = DEFAULT_COMMIT_EVERY,
 ) -> ApplyStats:
     """Apply the sorted changelog read from *src* to the LMDB at *lmdb_path*.
@@ -177,7 +177,9 @@ def apply_changelog(
         lmdb_path: Path to the existing LMDB directory.
         applied_parts: Optional list of frontfile part stems to record as
             applied in the terminal meta transaction.
-        map_size: Map size for the LMDB environment.
+        map_size: Map size for the LMDB environment. Defaults to the current
+            data.mdb size plus `DEFAULT_MAP_HEADROOM` so in-place VPS updates
+            do not re-inflate toward `DEFAULT_MAP_SIZE`.
         commit_every: Number of keys to process between commits.
 
     Returns:
@@ -189,6 +191,9 @@ def apply_changelog(
     """
     if not lmdb_path.exists():
         raise FileNotFoundError(f"LMDB path does not exist: {lmdb_path}")
+
+    if map_size is None:
+        map_size = write_map_size(lmdb_path)
 
     env = lmdb.open(
         str(lmdb_path),

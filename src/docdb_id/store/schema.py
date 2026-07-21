@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import TypeAlias
 
-DEFAULT_MAP_SIZE = 100 * 1024**3  # 100 GiB; LMDB files are sparse.
+DEFAULT_MAP_SIZE = 100 * 1024**3  # 100 GiB; for cold backfile load only.
+# Extra room beyond the current data.mdb for in-place frontfile / alias writes.
+# Keeps VPS updates from re-opening at DEFAULT_MAP_SIZE and re-inflating the file.
+DEFAULT_MAP_HEADROOM = 4 * 1024**3  # 4 GiB
 DEFAULT_COMMIT_EVERY = 100_000
 
 DOCS_DB_NAME = b"docs"
@@ -44,3 +48,17 @@ def now_iso() -> str:
         ISO 8601 timestamp string (e.g. "2024-01-15T14:30:00+00:00").
     """
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def write_map_size(lmdb_path: Path, *, headroom: int = DEFAULT_MAP_HEADROOM) -> int:
+    """Return a map_size for in-place writes: current data.mdb size plus headroom.
+
+    Args:
+        lmdb_path: LMDB environment directory (or data.mdb file path).
+        headroom: Bytes of growth room beyond the current file size.
+
+    Returns:
+        Map size in bytes suitable for opening the env for writes.
+    """
+    data = lmdb_path / "data.mdb" if lmdb_path.is_dir() else lmdb_path
+    return data.stat().st_size + headroom
