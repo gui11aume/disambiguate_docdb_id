@@ -23,8 +23,8 @@ BACKFILE_ALIAS_DONE   ?= $(LMDB_OUT)/.backfile.alias.done
 
 # Worker processes for XML parsing. For a single cold SATA disk, NJOBS=1 or 2 is
 # often fastest; raise for SSD/NVMe or when input and output live on separate disks.
-NCPU     := $(shell nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
-NJOBS   ?= $(shell echo $$(( $(NCPU) < 8 ? $(NCPU) : 8 )))
+NCPU  := $(shell nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+NJOBS ?= 1
 
 # Outer zips materialized on disk at once. Each adds roughly one delivery file
 # plus its expanded XML to peak disk use, so the backfile never fully lands on

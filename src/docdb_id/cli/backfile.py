@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import os
 import sys
 from pathlib import Path
 
@@ -80,7 +79,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--workers",
         type=int,
-        default=min(8, os.cpu_count() or 1),
+        default=1,
         help="Parse worker processes (default: min(8, nproc)). Use 1-2 for SATA.",
     )
     ap.add_argument(
