@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DOCDB Citation Cleaner</title>
+<style>
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    max-width: 720px;
+    margin: 3rem auto;
+    padding: 0 1rem;
+    color: #1a1a1a;
+  }
+  h1 { font-size: 1.4rem; }
+  p.sub { color: #555; margin-top: -0.5rem; }
+  textarea {
+    width: 100%;
+    min-height: 220px;
+    box-sizing: border-box;
+    font-family: inherit;
+    font-size: 0.95rem;
+    padding: 0.6rem;
+  }
+  input[type="email"] {
+    padding: 0.5rem;
+    font-size: 0.95rem;
+    width: 260px;
+    box-sizing: border-box;
+  }
+  button {
+    padding: 0.5rem 1rem;
+    font-size: 0.95rem;
+    cursor: pointer;
+  }
+  #status { margin-top: 0.75rem; font-size: 0.9rem; color: #555; }
+  #result {
+    white-space: pre-wrap;
+    background: #f6f6f6;
+    padding: 0.75rem;
+    border-radius: 4px;
+    margin-top: 1rem;
+    min-height: 2rem;
+  }
+  .hidden { display: none; }
+  #charcount { font-size: 0.85rem; color: #777; }
+</style>
+</head>
+<body>
+
+<h1>DOCDB Citation Cleaner</h1>
+<p class="sub">Paste text with informal patent citations and get back canonical DOCDB IDs.</p>
+
+<section id="signin-section">
+  <h2>Sign in</h2>
+  <form id="signin-form">
+    <input type="email" id="email" placeholder="you@example.com" required>
+    <button type="submit">Send sign-in link</button>
+  </form>
+  <div id="signin-status"></div>
+</section>
+
+<section id="clean-section" class="hidden">
+  <h2>Clean text</h2>
+  <textarea id="input-text" maxlength="4000" placeholder="US 8,000,000 (Greenberg) teaches..."></textarea>
+  <div id="charcount">0 / 4000</div>
+  <button id="clean-button">Clean</button>
+  <div id="status"></div>
+  <div id="result"></div>
+</section>
+
+<script>
+const MAX_CHARS = 4000;
+
+const signinForm = document.getElementById("signin-form");
+const signinStatus = document.getElementById("signin-status");
+const cleanSection = document.getElementById("clean-section");
+const signinSection = document.getElementById("signin-section");
+const inputText = document.getElementById("input-text");
+const charcount = document.getElementById("charcount");
+const cleanButton = document.getElementById("clean-button");
+const statusEl = document.getElementById("status");
+const resultEl = document.getElementById("result");
+
+function hasSession() {
+  return document.cookie.split(";").some((c) => c.trim().startsWith("session="));
+}
+
+if (hasSession()) {
+  signinSection.classList.add("hidden");
+  cleanSection.classList.remove("hidden");
+}
+
+signinForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const email = document.getElementById("email").value;
+  signinStatus.textContent = "Sending...";
+  try {
+    await fetch("/auth/request-link", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email }),
+    });
+    signinStatus.textContent = "Check your email for a sign-in link.";
+  } catch (err) {
+    signinStatus.textContent = "Something went wrong. Please try again.";
+  }
+});
+
+inputText.addEventListener("input", () => {
+  charcount.textContent = `${inputText.value.length} / ${MAX_CHARS}`;
+});
+
+cleanButton.addEventListener("click", async () => {
+  const text = inputText.value;
+  statusEl.textContent = "Cleaning...";
+  resultEl.textContent = "";
+  cleanButton.disabled = true;
+  try {
+    const resp = await fetch("/clean", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    if (resp.status === 401) {
+      statusEl.textContent = "Your session expired. Please sign in again.";
+      signinSection.classList.remove("hidden");
+      cleanSection.classList.add("hidden");
+    } else if (resp.status === 429) {
+      statusEl.textContent = "Daily quota exceeded. Try again tomorrow.";
+    } else if (resp.status === 422) {
+      statusEl.textContent = "Text is too long (max 4,000 characters).";
+    } else if (!resp.ok) {
+      statusEl.textContent = "Something went wrong. Please try again.";
+    } else {
+      const data = await resp.json();
+      statusEl.textContent = "Done.";
+      resultEl.textContent = data.text;
+    }
+  } catch (err) {
+    statusEl.textContent = "Something went wrong. Please try again.";
+  } finally {
+    cleanButton.disabled = false;
+  }
+});
+</script>
+
+</body>
+</html>
