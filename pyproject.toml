@@ -42,6 +42,7 @@ docdb-api = "docdb_id.api.server:main"
 docdb-mcp = "docdb_id.mcp.server:main"
 docdb-mcp-http = "docdb_id.mcp.server:main_http"
 docdb-agent = "docdb_id.agent.vllm_agent:main"
+docdb-web = "docdb_id.web.server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/docdb_id"]

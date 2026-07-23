@@ -18,6 +18,27 @@ services:
       - "8001"
     command: ["uv", "run", "docdb-mcp-http"]
 
+  web:
+    build: .
+    restart: unless-stopped
+    environment:
+      DOCDB_MCP_URL: https://docdb.sarl-graip.fr/mcp
+      SCALEWAY_API_KEY: ${SCALEWAY_API_KEY}
+      SCALEWAY_BASE_URL: ${SCALEWAY_BASE_URL}
+      SCALEWAY_MODEL: qwen3.6-35b-a3b
+      SCALEWAY_TEM_API_KEY: ${SCALEWAY_TEM_API_KEY}
+      SCALEWAY_TEM_PROJECT_ID: ${SCALEWAY_TEM_PROJECT_ID}
+      WEB_DB_PATH: /data/web.sqlite3
+      WEB_DAILY_QUOTA: "20"
+      WEB_MAGIC_LINK_TTL_MINUTES: "15"
+      WEB_SESSION_TTL_DAYS: "30"
+      WEB_MAX_INPUT_CHARS: "4000"
+    volumes:
+      - web_data:/data
+    expose:
+      - "8002"
+    command: ["uv", "run", "docdb-web"]
+
   nginx:
     image: nginx:alpine
     restart: unless-stopped
@@ -30,6 +51,7 @@ services:
     depends_on:
       - api
       - mcp
+      - web
 
 volumes:
   lmdb_data:
@@ -38,3 +60,4 @@ volumes:
       type: none
       o: bind
       device: /srv/docdb
+  web_data:
