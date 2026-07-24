@@ -8,6 +8,12 @@ services:
       - lmdb_data:/data:ro
     expose:
       - "8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
 
   mcp:
     build: .
@@ -38,6 +44,12 @@ services:
     expose:
       - "8002"
     command: ["uv", "run", "docdb-web"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/')"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
 
   nginx:
     image: nginx:alpine
@@ -46,7 +58,7 @@ services:
       - "80:80"
       - "443:443"
     volumes:
-      - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./deploy/nginx:/etc/nginx/conf.d:ro
       - /etc/letsencrypt:/etc/letsencrypt:ro
     depends_on:
       - api
