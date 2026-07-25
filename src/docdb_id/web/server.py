@@ -203,6 +203,27 @@ async def verify(token: str) -> Response:
     return response
 
 
+@app.get("/auth/me")
+async def me(user_id: int = Depends(get_current_user_id)) -> dict:
+    """Report whether the caller has a valid session.
+
+    The session cookie is HttpOnly (by design, so page JS can't be tricked
+    into exfiltrating it via XSS), which means the frontend cannot detect
+    login state by reading `document.cookie` - it must ask the server
+    instead. This endpoint exists for exactly that.
+
+    Args:
+        user_id: The authenticated user, injected by `get_current_user_id`.
+
+    Returns:
+        {"authenticated": true}
+
+    Raises:
+        HTTPException 401: If there is no valid session.
+    """
+    return {"authenticated": True}
+
+
 @app.post("/clean")
 async def clean(body: CleanBody, user_id: int = Depends(get_current_user_id)) -> dict:
     """Replace patent citations in `body.text` with canonical DOCDB IDs.
@@ -250,4 +271,10 @@ async def clean(body: CleanBody, user_id: int = Depends(get_current_user_id)) ->
 def main() -> None:
     """Run the FastAPI server with uvicorn."""
     import uvicorn
-    uvicorn.run("docdb_id.web.server:app", host="0.0.0.0", port=8002)
+    # forwarded_allow_ips="*": trust X-Forwarded-Proto from whoever connects.
+    # Safe here because this service has no published port (docker-compose
+    # only `expose`s it) - nginx is the only thing that can ever reach it.
+    # Without this, request.base_url would report http:// even though nginx
+    # only accepts https, since uvicorn's default only trusts 127.0.0.1 and
+    # nginx connects from its own container IP on the Docker bridge network.
+    uvicorn.run("docdb_id.web.server:app", host="0.0.0.0", port=8002, forwarded_allow_ips="*")

@@ -223,6 +223,23 @@ def test_verify_rejects_invalid_token(client: TestClient):
     assert resp.status_code == 401
 
 
+def test_me_unauthenticated_returns_401(client: TestClient):
+    resp = client.get("/auth/me")
+    assert resp.status_code == 401
+
+
+def test_me_returns_200_after_verify(client: TestClient, tmp_path: Path):
+    """Regression test: the session cookie is HttpOnly, so the frontend can't
+    detect login state by reading document.cookie - it must ask /auth/me."""
+    client.post("/auth/request-link", json={"email": "a@example.com"})
+    token = _extract_token(str(tmp_path / "web.sqlite3"), "a@example.com")
+    client.get(f"/auth/verify?token={token}", follow_redirects=False)
+
+    resp = client.get("/auth/me")
+    assert resp.status_code == 200
+    assert resp.json() == {"authenticated": True}
+
+
 def test_full_auth_flow_then_clean(client: TestClient, tmp_path: Path, clean_calls):
     client.post("/auth/request-link", json={"email": "a@example.com"})
     token = _extract_token(str(tmp_path / "web.sqlite3"), "a@example.com")

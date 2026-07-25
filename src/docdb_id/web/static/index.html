@@ -82,14 +82,22 @@ const cleanButton = document.getElementById("clean-button");
 const statusEl = document.getElementById("status");
 const resultEl = document.getElementById("result");
 
-function hasSession() {
-  return document.cookie.split(";").some((c) => c.trim().startsWith("session="));
+// The session cookie is HttpOnly (intentionally - keeps it off-limits to any
+// injected script), so document.cookie can never see it even when the
+// session is genuinely valid. Ask the server instead of guessing from JS.
+async function checkSession() {
+  try {
+    const resp = await fetch("/auth/me");
+    if (resp.ok) {
+      signinSection.classList.add("hidden");
+      cleanSection.classList.remove("hidden");
+    }
+  } catch (err) {
+    // Network error: leave the sign-in form showing, nothing to recover here.
+  }
 }
 
-if (hasSession()) {
-  signinSection.classList.add("hidden");
-  cleanSection.classList.remove("hidden");
-}
+checkSession();
 
 signinForm.addEventListener("submit", async (e) => {
   e.preventDefault();
