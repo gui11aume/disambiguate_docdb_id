@@ -194,7 +194,7 @@ show-meta:
 # ── Deployment ────────────────────────────────────────────────────────────────
 COMPOSE ?= docker compose -f /opt/docdb/docker-compose.yml
 
-.PHONY: up down restart redeploy reload logs ps
+.PHONY: up down restart redeploy redeploy-all reload logs ps
 
 up:
 	$(COMPOSE) up -d --build
@@ -208,6 +208,17 @@ restart:
 # Always reload nginx to get the new IP on the Docker bridge network.
 redeploy:
 	$(COMPOSE) up -d --build $(SERVICE)
+	$(MAKE) reload
+
+# Full redeploy: pull latest, rebuild/recreate every service, reload nginx.
+# The reload is still required even though deploy/nginx/ is a directory mount
+# (so its content is always live inside the container): nginx's running
+# workers cache the parsed config until told to re-read it, and `up -d
+# --build` won't force that on its own unless nginx's own service definition
+# happened to change too.
+redeploy-all:
+	git -C /opt/docdb pull
+	$(COMPOSE) up -d --build
 	$(MAKE) reload
 
 reload:
