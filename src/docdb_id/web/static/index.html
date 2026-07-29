@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>DOCDB Citation Cleaner</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/favicon.ico" sizes="any">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Serif:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -212,7 +214,7 @@
     <p class="sub">Paste text with informal patent citations below.</p>
     <textarea id="input-text" maxlength="4000" placeholder="US 8,000,000 (Greenberg) teaches..."></textarea>
     <div id="charcount">0 / 4000</div>
-    <button id="clean-button">Clean</button>
+    <button id="clean-button">Resolve citations</button>
     <div id="status"></div>
     <div id="result"></div>
   </section>
@@ -306,7 +308,7 @@ function renderResult(container, text) {
 
 cleanButton.addEventListener("click", async () => {
   const text = inputText.value;
-  statusEl.textContent = "Cleaning...";
+  statusEl.textContent = "Resolving...";
   statusEl.classList.remove("error");
   resultEl.textContent = "";
   cleanButton.disabled = true;
@@ -333,7 +335,10 @@ cleanButton.addEventListener("click", async () => {
     } else {
       const data = await resp.json();
       statusEl.textContent = "Done.";
-      renderResult(resultEl, data.text);
+      // The agent's response can carry leading/trailing blank lines;
+      // "white-space: pre-wrap" renders those literally as empty lines in
+      // the result box, so strip them before display.
+      renderResult(resultEl, data.text.trim());
     }
   } catch (err) {
     statusEl.textContent = "Something went wrong. Please try again.";

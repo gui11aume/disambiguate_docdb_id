@@ -101,6 +101,17 @@
   ink text, accent border on hover), ghost (no border, muted text, ink on
   hover). No gradient buttons.
 
+## Brand Mark
+- **Favicon:** ink (`#1C1B18`) rounded square with a bold serif "D" in the
+  dark-mode brass tint (`#C99A4A`, chosen over the light-mode `#9C6B1F` for
+  legibility at 16px against the dark tile). Letterform set in Liberation
+  Serif Bold (metric-compatible with Times New Roman) for the raster
+  `favicon.ico`; the vector `favicon.svg` specifies a generic serif stack
+  (`Georgia, 'Liberation Serif', 'Times New Roman', serif`) since favicons
+  render without the page's webfont loading. Served at `/favicon.svg` and
+  `/favicon.ico` (both proxied through nginx to the `web` service — see
+  `deploy/nginx/default.conf`).
+
 ## Decisions Log
 | Date | Decision | Rationale |
 |------|----------|-----------|

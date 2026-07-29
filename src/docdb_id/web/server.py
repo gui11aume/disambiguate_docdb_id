@@ -131,6 +131,18 @@ async def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
 
 
+@app.get("/favicon.ico")
+async def favicon_ico() -> FileResponse:
+    """Serve the raster favicon (legacy browsers, bookmark icons)."""
+    return FileResponse(STATIC_DIR / "favicon.ico")
+
+
+@app.get("/favicon.svg")
+async def favicon_svg() -> FileResponse:
+    """Serve the vector favicon (modern browsers)."""
+    return FileResponse(STATIC_DIR / "favicon.svg")
+
+
 @app.post("/auth/request-link")
 async def request_link(body: RequestLinkBody, request: Request) -> dict:
     """Issue a magic sign-in link and email it to the given address.
