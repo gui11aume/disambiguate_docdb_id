@@ -4,73 +4,232 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>DOCDB Citation Cleaner</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Serif:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
+  /* Design system: see /DESIGN.md. Palette, type scale, and spacing values
+     below must stay in sync with it. */
+  :root {
+    --paper: #FAF8F3;
+    --paper-alt: #F3EFE6;
+    --border: #DCD5C7;
+    --ink: #1C1B18;
+    --muted: #6B6558;
+    --accent: #9C6B1F;
+    --accent-hover: #7E561A;
+    --accent-tint: #F1E6D2;
+    --success: #4B6F44;
+    --success-tint: #E7EEE3;
+    --warning: #B5541C;
+    --warning-tint: #F5E4D8;
+    --error: #8C2F2F;
+    --error-tint: #F2E1DF;
+    --info: #4A5A6B;
+    --info-tint: #E5E9EC;
+
+    --font-serif: "IBM Plex Serif", Georgia, serif;
+    --font-sans: "IBM Plex Sans", -apple-system, sans-serif;
+    --font-mono: "IBM Plex Mono", "SF Mono", monospace;
+
+    --space-xs: 4px; --space-sm: 8px; --space-md: 16px;
+    --space-lg: 24px; --space-xl: 32px; --space-2xl: 48px;
+
+    --radius-sm: 3px; --radius-md: 5px;
+  }
+
+  :root[data-theme="dark"] {
+    --paper: #1A1815; --paper-alt: #242019; --border: #38332A; --ink: #F3EFE6;
+    --muted: #A69C89; --accent: #C99A4A; --accent-hover: #DCAF63;
+    --accent-tint: #34291A; --success: #7FA377; --success-tint: #22291F;
+    --warning: #D07C4C; --warning-tint: #2E2117; --error: #C77A7A;
+    --error-tint: #2C1E1D; --info: #8FA3B5; --info-tint: #1E2429;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #1A1815; --paper-alt: #242019; --border: #38332A; --ink: #F3EFE6;
+      --muted: #A69C89; --accent: #C99A4A; --accent-hover: #DCAF63;
+      --accent-tint: #34291A; --success: #7FA377; --success-tint: #22291F;
+      --warning: #D07C4C; --warning-tint: #2E2117; --error: #C77A7A;
+      --error-tint: #2C1E1D; --info: #8FA3B5; --info-tint: #1E2429;
+    }
+  }
+
+  * { box-sizing: border-box; }
+
   body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-    max-width: 720px;
-    margin: 3rem auto;
-    padding: 0 1rem;
-    color: #1a1a1a;
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    font-size: 16px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
   }
-  h1 { font-size: 1.4rem; }
-  p.sub { color: #555; margin-top: -0.5rem; }
-  textarea {
-    width: 100%;
-    min-height: 220px;
-    box-sizing: border-box;
-    font-family: inherit;
-    font-size: 0.95rem;
-    padding: 0.6rem;
+
+  .wrap { max-width: 780px; margin: 0 auto; padding: var(--space-2xl) var(--space-lg); }
+
+  #theme-toggle {
+    position: fixed;
+    top: var(--space-md);
+    right: var(--space-md);
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    background: var(--paper);
+    border: 1px solid var(--border);
+    color: var(--muted);
+    padding: 6px 12px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
   }
+  #theme-toggle:hover { border-color: var(--accent); color: var(--accent); }
+
+  h1 {
+    font-family: var(--font-serif);
+    font-weight: 500;
+    font-size: 2.2rem;
+    line-height: 1.15;
+    margin: 0 0 var(--space-md);
+  }
+  .rule { width: 40px; height: 3px; background: var(--accent); border: none; margin: 0 0 var(--space-lg); }
+  p.tagline { font-size: 1.05rem; color: var(--muted); max-width: 48ch; margin: 0 0 var(--space-2xl); }
+
+  h2 { font-family: var(--font-serif); font-weight: 500; font-size: 1.4rem; margin: 0 0 var(--space-xs); }
+  p.sub { color: var(--muted); font-size: 0.92rem; margin: 0 0 var(--space-lg); }
+
+  section { padding-top: var(--space-xl); border-top: 1px solid var(--border); }
+  section:first-of-type { border-top: none; padding-top: 0; }
+
   input[type="email"] {
-    padding: 0.5rem;
+    font-family: var(--font-sans);
     font-size: 0.95rem;
+    padding: 10px 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--paper);
+    color: var(--ink);
     width: 260px;
     box-sizing: border-box;
   }
+  input[type="email"]:focus { outline: none; border-color: var(--accent); }
+
   button {
-    padding: 0.5rem 1rem;
-    font-size: 0.95rem;
+    font-family: var(--font-sans);
+    font-weight: 500;
+    font-size: 0.9rem;
+    padding: 10px 20px;
+    border-radius: var(--radius-sm);
     cursor: pointer;
+    border: 1px solid transparent;
+    background: var(--accent);
+    color: var(--paper);
   }
-  #status { margin-top: 0.75rem; font-size: 0.9rem; color: #555; }
+  button:hover:not(:disabled) { background: var(--accent-hover); }
+  button:disabled { opacity: 0.6; cursor: default; }
+
+  #signin-form { display: flex; gap: var(--space-sm); flex-wrap: wrap; }
+
+  textarea {
+    width: 100%;
+    min-height: 200px;
+    box-sizing: border-box;
+    font-family: var(--font-sans);
+    font-size: 0.95rem;
+    padding: var(--space-md);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--paper);
+    color: var(--ink);
+    resize: vertical;
+  }
+  textarea:focus { outline: none; border-color: var(--accent); }
+
+  #charcount { font-family: var(--font-mono); font-size: 0.75rem; color: var(--muted); text-align: right; margin: var(--space-xs) 0 var(--space-md); }
+
+  #status { margin-top: var(--space-sm); font-family: var(--font-mono); font-size: 0.85rem; color: var(--muted); }
+  #status.error { color: var(--error); }
+
   #result {
     white-space: pre-wrap;
-    background: #f6f6f6;
-    padding: 0.75rem;
-    border-radius: 4px;
-    margin-top: 1rem;
+    background: var(--paper-alt);
+    border: 1px solid var(--border);
+    padding: var(--space-md) var(--space-lg);
+    border-radius: var(--radius-md);
+    margin-top: var(--space-md);
     min-height: 2rem;
+    font-size: 1rem;
+    line-height: 1.7;
   }
+  #result:empty { display: none; }
+
+  .docdb-id {
+    font-family: var(--font-mono);
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+    background: var(--accent-tint);
+    color: var(--accent-hover);
+    padding: 1px 6px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--accent);
+  }
+  :root[data-theme="dark"] .docdb-id { color: var(--accent); }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .docdb-id { color: var(--accent); }
+  }
+  .docdb-id-missing {
+    background: var(--warning-tint);
+    color: var(--warning);
+    border-color: var(--warning);
+  }
+
   .hidden { display: none; }
-  #charcount { font-size: 0.85rem; color: #777; }
+
+  #signin-status { font-family: var(--font-mono); font-size: 0.85rem; color: var(--muted); margin-top: var(--space-sm); }
 </style>
 </head>
 <body>
 
-<h1>DOCDB Citation Cleaner</h1>
-<p class="sub">Paste text with informal patent citations and get back canonical DOCDB IDs.</p>
+<button id="theme-toggle" type="button">Dark mode</button>
 
-<section id="signin-section">
-  <h2>Sign in</h2>
-  <form id="signin-form">
-    <input type="email" id="email" placeholder="you@example.com" required>
-    <button type="submit">Send sign-in link</button>
-  </form>
-  <div id="signin-status"></div>
-</section>
+<div class="wrap">
+  <h1>DOCDB Citation Cleaner</h1>
+  <hr class="rule">
+  <p class="tagline">Paste text with informal patent citations and get back canonical DOCDB IDs.</p>
 
-<section id="clean-section" class="hidden">
-  <h2>Clean text</h2>
-  <textarea id="input-text" maxlength="4000" placeholder="US 8,000,000 (Greenberg) teaches..."></textarea>
-  <div id="charcount">0 / 4000</div>
-  <button id="clean-button">Clean</button>
-  <div id="status"></div>
-  <div id="result"></div>
-</section>
+  <section id="signin-section">
+    <h2>Sign in</h2>
+    <p class="sub">We'll email you a link — no password to remember.</p>
+    <form id="signin-form">
+      <input type="email" id="email" placeholder="you@example.com" required>
+      <button type="submit">Send sign-in link</button>
+    </form>
+    <div id="signin-status"></div>
+  </section>
+
+  <section id="clean-section" class="hidden">
+    <h2>Clean text</h2>
+    <p class="sub">Paste text with informal patent citations below.</p>
+    <textarea id="input-text" maxlength="4000" placeholder="US 8,000,000 (Greenberg) teaches..."></textarea>
+    <div id="charcount">0 / 4000</div>
+    <button id="clean-button">Clean</button>
+    <div id="status"></div>
+    <div id="result"></div>
+  </section>
+</div>
 
 <script>
 const MAX_CHARS = 4000;
+
+const themeToggle = document.getElementById("theme-toggle");
+const root = document.documentElement;
+let dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+function applyTheme() {
+  root.setAttribute("data-theme", dark ? "dark" : "light");
+  themeToggle.textContent = dark ? "Light mode" : "Dark mode";
+}
+themeToggle.addEventListener("click", () => { dark = !dark; applyTheme(); });
+applyTheme();
 
 const signinForm = document.getElementById("signin-form");
 const signinStatus = document.getElementById("signin-status");
@@ -119,9 +278,36 @@ inputText.addEventListener("input", () => {
   charcount.textContent = `${inputText.value.length} / ${MAX_CHARS}`;
 });
 
+// The agent appends "{DOCDB_ID}" (or "{not found}") right after each
+// citation rather than replacing it (see agent/default_prompt.py). Render
+// the bracketed part as a chip. Built with DOM text nodes, never innerHTML:
+// this text is user input round-tripped through an LLM, so it must never
+// be interpreted as HTML.
+function renderResult(container, text) {
+  container.textContent = "";
+  const re = /\{([^}]+)\}/g;
+  let lastIndex = 0;
+  let match;
+  while ((match = re.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      container.appendChild(document.createTextNode(text.slice(lastIndex, match.index)));
+    }
+    const inner = match[1];
+    const span = document.createElement("span");
+    span.textContent = inner;
+    span.className = inner.toLowerCase() === "not found" ? "docdb-id docdb-id-missing" : "docdb-id";
+    container.appendChild(span);
+    lastIndex = re.lastIndex;
+  }
+  if (lastIndex < text.length) {
+    container.appendChild(document.createTextNode(text.slice(lastIndex)));
+  }
+}
+
 cleanButton.addEventListener("click", async () => {
   const text = inputText.value;
   statusEl.textContent = "Cleaning...";
+  statusEl.classList.remove("error");
   resultEl.textContent = "";
   cleanButton.disabled = true;
   try {
@@ -132,21 +318,26 @@ cleanButton.addEventListener("click", async () => {
     });
     if (resp.status === 401) {
       statusEl.textContent = "Your session expired. Please sign in again.";
+      statusEl.classList.add("error");
       signinSection.classList.remove("hidden");
       cleanSection.classList.add("hidden");
     } else if (resp.status === 429) {
       statusEl.textContent = "Daily quota exceeded. Try again tomorrow.";
+      statusEl.classList.add("error");
     } else if (resp.status === 422) {
       statusEl.textContent = "Text is too long (max 4,000 characters).";
+      statusEl.classList.add("error");
     } else if (!resp.ok) {
       statusEl.textContent = "Something went wrong. Please try again.";
+      statusEl.classList.add("error");
     } else {
       const data = await resp.json();
       statusEl.textContent = "Done.";
-      resultEl.textContent = data.text;
+      renderResult(resultEl, data.text);
     }
   } catch (err) {
     statusEl.textContent = "Something went wrong. Please try again.";
+    statusEl.classList.add("error");
   } finally {
     cleanButton.disabled = false;
   }

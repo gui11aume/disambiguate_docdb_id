@@ -220,3 +220,4 @@ __marimo__/
 # docdb_id build artifacts
 #   STAGE scratch dir: downloads, expansion work dirs, and intermediate TSVs.
 stage/
+.gstack/
