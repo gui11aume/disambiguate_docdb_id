@@ -19,11 +19,14 @@ Environment variables:
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 import os
+import time
 from typing import Any
 
+import anyio
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 from openai import OpenAI
@@ -111,7 +114,10 @@ async def run_agent(
     Returns:
         The model's final text response after all tool calls are resolved.
     """
+    t_start = time.monotonic()
     listed = await session.list_tools()
+    t_list_tools = time.monotonic()
+    logger.info("list_tools: %.0fms", (t_list_tools - t_start) * 1000)
     tools = [_mcp_tool_to_openai(t) for t in listed.tools]
 
     messages: list[dict] = []
@@ -119,24 +125,48 @@ async def run_agent(
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": user_message})
 
+    iteration = 0
+    llm_time = 0.0
+    tool_time = 0.0
     while True:
-        response = openai_client.chat.completions.create(
-            model=model,
-            messages=messages,
-            tools=tools,
-            tool_choice="auto",
+        iteration += 1
+        t0 = time.monotonic()
+        # `chat.completions.create` is a blocking, synchronous HTTP call.
+        # Run it in a thread so it does not stall the event loop for the
+        # full LLM round-trip - otherwise nothing else this process serves
+        # (other users' requests, /auth/me, etc.) can proceed meanwhile.
+        response = await anyio.to_thread.run_sync(
+            functools.partial(
+                openai_client.chat.completions.create,
+                model=model,
+                messages=messages,
+                tools=tools,
+                tool_choice="auto",
+            )
         )
+        elapsed = time.monotonic() - t0
+        llm_time += elapsed
+        logger.info("llm completion #%d: %.0fms", iteration, elapsed * 1000)
         msg = response.choices[0].message
         messages.append(msg)
 
         if not msg.tool_calls:
+            total = time.monotonic() - t_start
+            logger.info(
+                "run_agent total: %.0fms (list_tools=%.0fms llm=%.0fms tool=%.0fms, %d llm calls)",
+                total * 1000, (t_list_tools - t_start) * 1000, llm_time * 1000, tool_time * 1000, iteration,
+            )
             return msg.content
 
         for tc in msg.tool_calls:
             args = json.loads(tc.function.arguments)
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug("tool call: %s(%s)", tc.function.name, tc.function.arguments)
+            t0 = time.monotonic()
             result = await session.call_tool(tc.function.name, args)
+            tool_elapsed = time.monotonic() - t0
+            tool_time += tool_elapsed
+            logger.info("tool call %s: %.0fms", tc.function.name, tool_elapsed * 1000)
             payload = _tool_result_payload(result)
             content = json.dumps(payload)
             if logger.isEnabledFor(logging.DEBUG):
@@ -161,18 +191,23 @@ async def clean_text(text: str) -> str:
     Returns:
         The text with citations replaced by canonical DOCDB IDs.
     """
+    t_start = time.monotonic()
     openai_client = OpenAI(base_url=SCALEWAY_BASE_URL, api_key=SCALEWAY_API_KEY)
 
     async with streamablehttp_client(DOCDB_MCP_URL) as (read, write, _get_session_id):
         async with ClientSession(read, write) as session:
             await session.initialize()
-            return await run_agent(
+            t_connect = time.monotonic()
+            logger.info("mcp connect+initialize: %.0fms", (t_connect - t_start) * 1000)
+            result = await run_agent(
                 session,
                 openai_client,
                 SCALEWAY_MODEL,
                 text,
                 system_prompt=DEFAULT_SYSTEM_PROMPT,
             )
+            logger.info("clean_text total: %.0fms", (time.monotonic() - t_start) * 1000)
+            return result
 
 
 def clean_text_sync(text: str) -> str:

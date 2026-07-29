@@ -188,6 +188,22 @@
   .hidden { display: none; }
 
   #signin-status { font-family: var(--font-mono); font-size: 0.85rem; color: var(--muted); margin-top: var(--space-sm); }
+
+  .site-footer {
+    margin-top: var(--space-2xl);
+    padding-top: var(--space-lg);
+    border-top: 1px solid var(--border);
+  }
+  .site-footer p {
+    margin: 0;
+    font-size: 0.85rem;
+    line-height: 1.6;
+    color: var(--muted);
+    max-width: 60ch;
+  }
+  .site-footer p + p { margin-top: var(--space-md); }
+  .site-footer a { color: var(--accent); text-decoration: none; }
+  .site-footer a:hover { color: var(--accent-hover); text-decoration: underline; }
 </style>
 </head>
 <body>
@@ -218,6 +234,21 @@
     <div id="status"></div>
     <div id="result"></div>
   </section>
+
+  <footer class="site-footer">
+    <p>Results are generated automatically and may contain errors. Verify
+    each match against the official record before relying on it for legal
+    or filing purposes. This tool is provided without warranty of any
+    kind.</p>
+    <p>This tool runs entirely in the EU. Your text is processed by an
+    open-source model (Qwen, Apache 2.0) on Scaleway's infrastructure in
+    Paris. It's handled automatically — never logged, never stored, and
+    never used to train anything. The only thing we keep is your email
+    address, so you can sign back in, and a request count to enforce the
+    daily limit.</p>
+    <p>This product contains data sourced from EPO databases, ©
+    <a href="https://www.epo.org">European Patent Organisation</a>.</p>
+  </footer>
 </div>
 
 <script>
@@ -334,7 +365,7 @@ cleanButton.addEventListener("click", async () => {
       statusEl.classList.add("error");
     } else {
       const data = await resp.json();
-      statusEl.textContent = "Done.";
+      statusEl.textContent = "";
       // The agent's response can carry leading/trailing blank lines;
       // "white-space: pre-wrap" renders those literally as empty lines in
       // the result box, so strip them before display.

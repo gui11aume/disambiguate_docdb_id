@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -255,6 +256,8 @@ async def clean(body: CleanBody, user_id: int = Depends(get_current_user_id)) ->
         HTTPException 429: If the account has hit `WEB_DAILY_QUOTA` requests
             in the last rolling 24h.
     """
+    t_start = time.monotonic()
+
     def _check_quota() -> int:
         conn = db.connect(WEB_DB_PATH)
         try:
@@ -265,8 +268,10 @@ async def clean(body: CleanBody, user_id: int = Depends(get_current_user_id)) ->
     request_count = await anyio.to_thread.run_sync(_check_quota)
     if request_count >= WEB_DAILY_QUOTA:
         raise HTTPException(status_code=429, detail="daily quota exceeded")
+    t_quota = time.monotonic()
 
     result_text = await clean_text(body.text)
+    t_clean = time.monotonic()
 
     def _log() -> None:
         conn = db.connect(WEB_DB_PATH)
@@ -276,6 +281,14 @@ async def clean(body: CleanBody, user_id: int = Depends(get_current_user_id)) ->
             conn.close()
 
     await anyio.to_thread.run_sync(_log)
+    t_end = time.monotonic()
+    logger.info(
+        "/clean total=%.0fms quota_check=%.0fms clean_text=%.0fms log=%.0fms",
+        (t_end - t_start) * 1000,
+        (t_quota - t_start) * 1000,
+        (t_clean - t_quota) * 1000,
+        (t_end - t_clean) * 1000,
+    )
 
     return {"text": result_text}
 
@@ -283,6 +296,12 @@ async def clean(body: CleanBody, user_id: int = Depends(get_current_user_id)) ->
 def main() -> None:
     """Run the FastAPI server with uvicorn."""
     import uvicorn
+    # Without this, INFO-level records (including the /clean and mcp_agent
+    # timing breakdowns above) never reach the logs: uvicorn's own logging
+    # setup only configures its own loggers, so this process's root logger
+    # stays at the Python default (WARNING, no handler) and silently drops
+    # everything below that.
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
     # forwarded_allow_ips="*": trust X-Forwarded-Proto from whoever connects.
     # Safe here because this service has no published port (docker-compose
     # only `expose`s it) - nginx is the only thing that can ever reach it.
