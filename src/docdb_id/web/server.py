@@ -83,11 +83,18 @@ def send_magic_link_email(email: str, link_url: str) -> None:
         headers={"X-Auth-Token": SCALEWAY_TEM_API_KEY},
         json={
             "project_id": SCALEWAY_TEM_PROJECT_ID,
-            "from": {"email": SCALEWAY_TEM_SENDER},
+            "from": {"email": SCALEWAY_TEM_SENDER, "name": "DOCDB Resolver"},
             "to": [{"email": email}],
-            "subject": "Your DOCDB sign-in link",
-            "text": f"Sign in to DOCDB citation cleaner:\n\n{link_url}\n\n"
-                    f"This link expires in {WEB_MAGIC_LINK_TTL_MINUTES} minutes.",
+            "subject": "Sign in to DOCDB Resolver",
+            "text": f"DOCDB Resolver\n"
+                    f"--------------\n\n"
+                    f"Click the link below to sign in:\n\n"
+                    f"{link_url}\n\n"
+                    f"This link expires in {WEB_MAGIC_LINK_TTL_MINUTES} minutes and can "
+                    f"only be used once.\n\n"
+                    f"If you didn't request this, you can safely ignore this email.\n\n"
+                    f"--\n"
+                    f"docdb.sarl-graip.fr",
         },
         timeout=10.0,
     )
