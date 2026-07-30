@@ -48,7 +48,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="DOCDB Citation Cleaner", lifespan=lifespan)
+app = FastAPI(title="DOCDB Resolver", lifespan=lifespan)
 
 
 class RequestLinkBody(BaseModel):

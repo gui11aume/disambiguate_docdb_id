@@ -1,4 +1,4 @@
-# Design System — DOCDB Citation Cleaner
+# Design System — DOCDB Resolver
 
 ## Product Context
 - **What this is:** A hosted web app where a user pastes text and gets informal
