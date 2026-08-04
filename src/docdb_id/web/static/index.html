@@ -225,12 +225,12 @@
     <div id="signin-status"></div>
   </section>
 
-  <section id="clean-section" class="hidden">
-    <h2>Clean text</h2>
+  <section id="resolve-section" class="hidden">
+    <h2>Resolve citations</h2>
     <p class="sub">Paste text with informal patent citations below.</p>
     <textarea id="input-text" maxlength="4000" placeholder="US 8,000,000 (Greenberg) teaches..."></textarea>
     <div id="charcount">0 / 4000</div>
-    <button id="clean-button">Resolve citations</button>
+    <button id="resolve-button">Resolve citations</button>
     <div id="status"></div>
     <div id="result"></div>
   </section>
@@ -266,11 +266,11 @@ applyTheme();
 
 const signinForm = document.getElementById("signin-form");
 const signinStatus = document.getElementById("signin-status");
-const cleanSection = document.getElementById("clean-section");
+const resolveSection = document.getElementById("resolve-section");
 const signinSection = document.getElementById("signin-section");
 const inputText = document.getElementById("input-text");
 const charcount = document.getElementById("charcount");
-const cleanButton = document.getElementById("clean-button");
+const resolveButton = document.getElementById("resolve-button");
 const statusEl = document.getElementById("status");
 const resultEl = document.getElementById("result");
 
@@ -282,7 +282,7 @@ async function checkSession() {
     const resp = await fetch("/auth/me");
     if (resp.ok) {
       signinSection.classList.add("hidden");
-      cleanSection.classList.remove("hidden");
+      resolveSection.classList.remove("hidden");
     }
   } catch (err) {
     // Network error: leave the sign-in form showing, nothing to recover here.
@@ -337,14 +337,14 @@ function renderResult(container, text) {
   }
 }
 
-cleanButton.addEventListener("click", async () => {
+resolveButton.addEventListener("click", async () => {
   const text = inputText.value;
   statusEl.textContent = "Resolving...";
   statusEl.classList.remove("error");
   resultEl.textContent = "";
-  cleanButton.disabled = true;
+  resolveButton.disabled = true;
   try {
-    const resp = await fetch("/clean", {
+    const resp = await fetch("/resolve", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text }),
@@ -353,7 +353,7 @@ cleanButton.addEventListener("click", async () => {
       statusEl.textContent = "Your session expired. Please sign in again.";
       statusEl.classList.add("error");
       signinSection.classList.remove("hidden");
-      cleanSection.classList.add("hidden");
+      resolveSection.classList.add("hidden");
     } else if (resp.status === 429) {
       statusEl.textContent = "Daily quota exceeded. Try again tomorrow.";
       statusEl.classList.add("error");
@@ -375,7 +375,7 @@ cleanButton.addEventListener("click", async () => {
     statusEl.textContent = "Something went wrong. Please try again.";
     statusEl.classList.add("error");
   } finally {
-    cleanButton.disabled = false;
+    resolveButton.disabled = false;
   }
 });
 </script>

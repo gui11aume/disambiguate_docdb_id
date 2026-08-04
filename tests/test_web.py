@@ -1,4 +1,4 @@
-"""Tests for the hosted citation-cleaning web app."""
+"""Tests for the hosted citation-resolving web app."""
 
 from __future__ import annotations
 
@@ -105,7 +105,10 @@ def test_run_agent_dispatches_tool_call_and_returns_final_content():
 
     tool_call = SimpleNamespace(
         id="call1",
-        function=SimpleNamespace(name="resolve_docdb_id", arguments=json.dumps({"cc": "US", "number": "8000000"})),
+        function=SimpleNamespace(
+            name="resolve_docdb_id",
+            arguments=json.dumps({"items": [{"cc": "US", "number": "8000000"}]}),
+        ),
     )
     first_msg = SimpleNamespace(tool_calls=[tool_call], content=None)
     second_msg = SimpleNamespace(tool_calls=None, content="US8000000B2")
@@ -122,7 +125,7 @@ def test_run_agent_dispatches_tool_call_and_returns_final_content():
     result = asyncio.run(run_agent(session, openai_client, "model", "US 8,000,000"))
 
     assert result == "US8000000B2"
-    assert calls == [("resolve_docdb_id", {"cc": "US", "number": "8000000"})]
+    assert calls == [("resolve_docdb_id", {"items": [{"cc": "US", "number": "8000000"}]})]
 
 
 def test_tool_result_payload_raises_on_error():
@@ -153,19 +156,19 @@ def sent_emails(monkeypatch):
 
 
 @pytest.fixture()
-def clean_calls(monkeypatch):
+def resolve_calls(monkeypatch):
     calls = []
 
-    async def fake_clean_text(text: str) -> str:
+    async def fake_resolve_text(text: str) -> str:
         calls.append(text)
-        return f"CLEANED:{text}"
+        return f"RESOLVED:{text}"
 
-    monkeypatch.setattr(web_server, "clean_text", fake_clean_text)
+    monkeypatch.setattr(web_server, "resolve_text", fake_resolve_text)
     return calls
 
 
 @pytest.fixture()
-def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sent_emails, clean_calls):
+def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sent_emails, resolve_calls):
     monkeypatch.setattr(web_server, "WEB_DB_PATH", str(tmp_path / "web.sqlite3"))
     # base_url must be https: the session cookie is Secure (server.py), and
     # Starlette's default http://testserver base_url would silently drop it
@@ -240,34 +243,34 @@ def test_me_returns_200_after_verify(client: TestClient, tmp_path: Path):
     assert resp.json() == {"authenticated": True}
 
 
-def test_full_auth_flow_then_clean(client: TestClient, tmp_path: Path, clean_calls):
+def test_full_auth_flow_then_resolve(client: TestClient, tmp_path: Path, resolve_calls):
     client.post("/auth/request-link", json={"email": "a@example.com"})
     token = _extract_token(str(tmp_path / "web.sqlite3"), "a@example.com")
     client.get(f"/auth/verify?token={token}", follow_redirects=False)
 
-    resp = client.post("/clean", json={"text": "US 8,000,000 (Greenberg)"})
+    resp = client.post("/resolve", json={"text": "US 8,000,000 (Greenberg)"})
     assert resp.status_code == 200
-    assert resp.json() == {"text": "CLEANED:US 8,000,000 (Greenberg)"}
-    assert clean_calls == ["US 8,000,000 (Greenberg)"]
+    assert resp.json() == {"text": "RESOLVED:US 8,000,000 (Greenberg)"}
+    assert resolve_calls == ["US 8,000,000 (Greenberg)"]
 
 
-def test_clean_unauthenticated_returns_401(client: TestClient):
-    resp = client.post("/clean", json={"text": "US 8,000,000 (Greenberg)"})
+def test_resolve_unauthenticated_returns_401(client: TestClient):
+    resp = client.post("/resolve", json={"text": "US 8,000,000 (Greenberg)"})
     assert resp.status_code == 401
 
 
-def test_clean_input_too_long_returns_422_without_llm_call(
-    client: TestClient, tmp_path: Path, clean_calls
+def test_resolve_input_too_long_returns_422_without_llm_call(
+    client: TestClient, tmp_path: Path, resolve_calls
 ):
     _login(client, tmp_path, "a@example.com")
     too_long = "x" * (web_server.WEB_MAX_INPUT_CHARS + 1)
 
-    resp = client.post("/clean", json={"text": too_long})
+    resp = client.post("/resolve", json={"text": too_long})
     assert resp.status_code == 422
-    assert clean_calls == []
+    assert resolve_calls == []
 
 
-def test_clean_quota_exceeded_returns_429(client: TestClient, tmp_path: Path):
+def test_resolve_quota_exceeded_returns_429(client: TestClient, tmp_path: Path):
     user_id = _login(client, tmp_path, "a@example.com")
 
     conn = db.connect(str(tmp_path / "web.sqlite3"))
@@ -277,5 +280,5 @@ def test_clean_quota_exceeded_returns_429(client: TestClient, tmp_path: Path):
     finally:
         conn.close()
 
-    resp = client.post("/clean", json={"text": "US 8,000,000 (Greenberg)"})
+    resp = client.post("/resolve", json={"text": "US 8,000,000 (Greenberg)"})
     assert resp.status_code == 429

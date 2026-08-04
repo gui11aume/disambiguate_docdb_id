@@ -10,15 +10,50 @@ import os
 
 import httpx
 from mcp.server.fastmcp import FastMCP
+from pydantic import BaseModel, Field
+
+from docdb_id.agent.default_prompt import NORMALIZE_CITATIONS_WORKFLOW
 
 logger = logging.getLogger("docdb_id.mcp")
 
 mcp = FastMCP("DOCDB Disambiguator", host="0.0.0.0", port=8001)
 
+MAX_MCP_BATCH = 50
+
+
+class ItemToResolve(BaseModel):
+    """A single patent publication number to resolve."""
+
+    cc: str = Field(description='Two-letter DOCDB country code, e.g. "US", "EP".')
+    number: str = Field(
+        description=(
+            "Publication number without kind code or country prefix; "
+            "digits and letters only."
+        ),
+    )
+
+
+@mcp.prompt(
+    name="normalize_docdb_citations",
+    title="Normalize DOCDB Citations",
+    description=(
+        "Append canonical DOCDB IDs to patent references in free text. "
+        "Mirrors the DOCDB Resolver agent skill: call resolve_docdb_id, "
+        "match inventor/date context, and rewrite the document in place."
+    ),
+)
+def normalize_docdb_citations() -> str:
+    """Claude-skill-style workflow to resolve DOCDB citations."""
+    return f"{NORMALIZE_CITATIONS_WORKFLOW}"
+
 
 @mcp.tool()
-def resolve_docdb_id(cc: str, number: str) -> list[dict]:
-    """Resolve a patent publication number to its canonical DOCDB record(s).
+def resolve_docdb_id(items: list[ItemToResolve]) -> list[dict]:
+    """Resolve patent publication numbers to canonical DOCDB record(s).
+
+    Pass all distinct references in one call (max 50 items). Each item is
+    looked up independently; results are returned in the same order, keyed by
+    the input cc and number.
 
     IMPORTANT — strip the kind code before calling:
         "US8000000B2"  → cc="US",  number="8000000"
@@ -29,10 +64,17 @@ def resolve_docdb_id(cc: str, number: str) -> list[dict]:
 
     Also strip formatting: "US 8,000,000" → cc="US", number="8000000".
 
+    Example:
+        resolve_docdb_id(items=[
+            {"cc": "US", "number": "8000000"},
+            {"cc": "EP", "number": "1234567"},
+            {"cc": "WO", "number": "2013143024"},
+        ])
+
     Leading zeros in the number are ignored: "08000000" and "8000000" are
     equivalent.
 
-    If you get an empty list:
+    If an item's results list is empty and error is null:
       1. Check that you stripped the kind code (most common mistake).
       2. Consider common transcription errors: O/0, I/1, S/5, B/8.
          Try plausible substitutions in the number.
@@ -40,37 +82,44 @@ def resolve_docdb_id(cc: str, number: str) -> list[dict]:
          reconstruct the most likely number and retry.
 
     Processing the output:
-      The tool returns the first inventor and publication date. These map
+      Each item returns the first inventor and publication date. These map
       directly onto how patents are cited in practice: "Greenberg et al. (2011)"
       should match inventor "ROBERT J. GREENBERG" and date_publ starting with
-      "2011". If you get multiple records, compare inventor names and publication
-      dates to select the most likely match. The tool gives you candidates, not a
-      verdict.
+      "2011". If you get multiple records for one item, compare inventor names
+      and publication dates to select the most likely match. The tool gives you
+      candidates, not a verdict.
 
     Args:
-        cc: Two-letter DOCDB country code, e.g. "US", "EP", "WO", "DE", "JP",
-            "FR", "GB", "CN", "KR". Must be exactly 2 characters.
-        number: Publication number without kind code or country prefix, digits
-            and letters only (no hyphens, spaces, or slashes).
+        items: One or more lookups (max 50). Each has:
+          - cc: Two-letter DOCDB country code, e.g. "US", "EP", "WO".
+          - number: Publication number without kind code or country prefix,
+            digits and letters only (no hyphens, spaces, or slashes).
 
     Returns:
-        List of matching records, each with:
-          - docdb_id:  full DOCDB ID including kind code, e.g. "US8000000B2"
-          - inventor:  first inventor full name in caps, e.g. "ROBERT J. GREENBERG"
-          - date_publ: publication date as YYYYMMDD, e.g. "20110816"
-          - family_id: DOCDB patent family ID, e.g. "39183031"
-        Multiple records mean the same publication number has several document
-        variants (e.g. an A1 and a B2 publication of the same application).
-        Empty list means no match — not an error.
-
-        Error codes (returned inline, not as exceptions):
-          - "cc_does_not_exist": cc is not a recognized DOCDB country code.
-          - "number_is_not_alnum": number contains illegal characters.
+        One object per input item, in the same order, each with:
+          - cc, number: echoed from the request
+          - results: list of matching records, each with:
+              - docdb_id:  full DOCDB ID including kind code, e.g. "US8000000B2"
+              - inventor:  first inventor full name in caps
+              - date_publ: publication date as YYYYMMDD
+              - family_id: DOCDB patent family ID
+            Multiple records mean document variants (e.g. A1 and B2).
+            Empty results with error null means no match — not an error.
+          - error: null on success, or an inline validation error:
+              - "cc_does_not_exist": unrecognized DOCDB country code
+              - "number_is_not_alnum": illegal characters in number
     """
+    if not items:
+        raise ValueError("items must be non-empty")
+    if len(items) > MAX_MCP_BATCH:
+        raise ValueError(f"max {MAX_MCP_BATCH} items per call")
+
     api_url = os.environ.get("DOCDB_API_URL", "").rstrip("/")
     if not api_url:
         raise RuntimeError("DOCDB_API_URL must be set")
-    resp = httpx.get(f"{api_url}/query", params={"cc": cc, "number": number}, timeout=10.0)
+
+    payload = {"items": [item.model_dump() for item in items]}
+    resp = httpx.post(f"{api_url}/batch", json=payload, timeout=10.0)
     resp.raise_for_status()
     return resp.json()
 

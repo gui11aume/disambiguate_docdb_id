@@ -79,15 +79,15 @@
 - **Approach:** Minimal-functional only — nothing moves without a reason.
 - **Easing:** enter(ease-out) exit(ease-in) move(ease-in-out)
 - **Duration:** micro(50–100ms) short(150–250ms) medium(250–400ms)
-- **Concretely:** a soft fade when the clean-text section swaps in after
-  sign-in, a subtle pulse on the "Cleaning…" status text. No scroll-driven
+- **Concretely:** a soft fade when the resolve-section swaps in after
+  sign-in, a subtle pulse on the "Resolving…" status text. No scroll-driven
   or decorative animation.
 
 ## Component Notes
 - **DOCDB ID chips:** the agent does not replace the original citation — it
   appends the canonical ID in curly braces right after it (see
   `agent/default_prompt.py`, e.g. `US 8,000,000 (Greenberg) {US8000000B2}`),
-  or `{not found}` when it can't resolve one. The `/clean` result view
+  or `{not found}` when it can't resolve one. The `/resolve` result view
   parses `{...}` and renders the captured content as an inline chip instead
   of literal braces: a resolved ID gets the mono, tabular, accent-tinted
   chip (`background: var(--accent-tint); border: 1px solid var(--accent)`);
@@ -116,3 +116,4 @@
 | Date | Decision | Rationale |
 |------|----------|-----------|
 | 2026-07-29 | Initial design system created | Created by `/design-consultation`. Memorable-thing brief from the user: "serious, precise, trustworthy tooling." Research (WebSearch) found 2026 legal-tech design converging on institutional weight/restraint, and that technical products (e.g. Stripe) build trust through typographic precision. Deliberate departures from category norms: IBM Plex superfamily instead of system-ui/Inter (nobody in patent-tech uses Plex; one family across serif/sans/mono reads as "engineered," not templated), and warm paper + brass accent instead of the white+blue every patent search tool (PatSeer, AcclaimIP, IPRally) defaults to. Approved via a self-contained HTML preview rendering the actual sign-in and clean-text screens (`gstack design`'s AI-mockup path was unavailable — no OpenAI key configured in this environment — so Path B, the HTML preview, was used instead of AI-generated mockups). User confirmed: "The design is good. I want to keep it." |
+| 2026-07-31 | Renamed product to "DOCDB Resolver"; `/clean` endpoint renamed to `/resolve` throughout (route, handler, Pydantic model, JS ids/vars, nginx location, email copy, favicon-adjacent branding unaffected) | "DOCDB Citation Cleaner" read as a dated 2000s-era PC-utility name (the word "Cleaner" specifically evokes CCleaner/Registry Cleaner-style low-trust software). "Resolve" was already the user's own pick for the action button over alternatives, and matches the underlying `resolve_docdb_id` MCP tool name — renaming the endpoint and section ids to match keeps the codebase's own vocabulary consistent with the product's public name instead of leaving a stale "clean" trail behind a "Resolver" brand. |

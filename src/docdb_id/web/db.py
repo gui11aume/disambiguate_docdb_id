@@ -1,4 +1,4 @@
-"""SQLite storage for the hosted citation-cleaning web app.
+"""SQLite storage for the hosted citation-resolving web app.
 
 Holds accounts, magic-link tokens, sessions, and a per-account request log
 used to enforce the rolling 24h quota. Deliberately not LMDB: this is small,
@@ -183,7 +183,7 @@ def get_session_user(conn: sqlite3.Connection, token: str) -> int | None:
 
 
 def log_request(conn: sqlite3.Connection, user_id: int) -> None:
-    """Record a `/clean` request for quota accounting.
+    """Record a `/resolve` request for quota accounting.
 
     Args:
         conn: Open database connection.

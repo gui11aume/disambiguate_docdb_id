@@ -1,4 +1,4 @@
-"""Citation-cleaning agent for the hosted web app.
+"""Citation-resolving agent for the hosted web app.
 
 Bridges a real MCP client session against `docdb.sarl-graip.fr/mcp` with
 Scaleway's OpenAI-compatible hosted LLM. Kept separate from
@@ -108,7 +108,7 @@ async def run_agent(
         session: An initialized MCP `ClientSession`.
         openai_client: OpenAI-compatible client (e.g. pointed at Scaleway).
         model: Model name to request completions from.
-        user_message: The user's request (citation text to clean).
+        user_message: The user's request (citation text to resolve).
         system_prompt: Optional system prompt to set context.
 
     Returns:
@@ -178,8 +178,8 @@ async def run_agent(
             })
 
 
-async def clean_text(text: str) -> str:
-    """Replace patent citations in `text` with canonical DOCDB IDs.
+async def resolve_text(text: str) -> str:
+    """Append canonical DOCDB IDs to patent citations in `text`.
 
     Opens a real MCP client session against `DOCDB_MCP_URL` and a Scaleway
     chat-completions client, then runs the tool-calling loop.
@@ -206,12 +206,12 @@ async def clean_text(text: str) -> str:
                 text,
                 system_prompt=DEFAULT_SYSTEM_PROMPT,
             )
-            logger.info("clean_text total: %.0fms", (time.monotonic() - t_start) * 1000)
+            logger.info("resolve_text total: %.0fms", (time.monotonic() - t_start) * 1000)
             return result
 
 
-def clean_text_sync(text: str) -> str:
-    """Synchronous wrapper around `clean_text` for non-async callers.
+def resolve_text_sync(text: str) -> str:
+    """Synchronous wrapper around `resolve_text` for non-async callers.
 
     Args:
         text: Free text containing patent citations.
@@ -219,4 +219,4 @@ def clean_text_sync(text: str) -> str:
     Returns:
         The text with citations replaced by canonical DOCDB IDs.
     """
-    return asyncio.run(clean_text(text))
+    return asyncio.run(resolve_text(text))

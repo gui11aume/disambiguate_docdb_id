@@ -1,9 +1,9 @@
-"""FastAPI server for the hosted citation-cleaning web app.
+"""FastAPI server for the hosted citation-resolving web app.
 
 Endpoints: GET / (static UI), POST /auth/request-link, GET /auth/verify,
-POST /clean. Sits behind nginx at docdb.sarl-graip.fr's `/`, `/auth/`, and
-`/clean` routes (see deploy/nginx.conf), fully additive to the existing
-/query, /batch, /health, /stats, /mcp surface.
+POST /resolve. Sits behind nginx at docdb.sarl-graip.fr's `/`, `/auth/`, and
+`/resolve` routes (see deploy/nginx/default.conf), fully additive to the
+existing /query, /batch, /health, /stats, /mcp surface.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, field_validator
 
 from docdb_id.web import db
-from docdb_id.web.mcp_agent import clean_text
+from docdb_id.web.mcp_agent import resolve_text
 
 logger = logging.getLogger("docdb_id.web")
 
@@ -56,8 +56,8 @@ class RequestLinkBody(BaseModel):
     email: str
 
 
-class CleanBody(BaseModel):
-    """Body for POST /clean."""
+class ResolveBody(BaseModel):
+    """Body for POST /resolve."""
     text: str
 
     @field_validator("text")
@@ -131,7 +131,7 @@ async def get_current_user_id(session: str | None = Cookie(default=None, alias=S
 
 @app.get("/")
 async def index() -> FileResponse:
-    """Serve the single-page citation-cleaning UI.
+    """Serve the single-page citation-resolving UI.
 
     Returns:
         The static index.html file.
@@ -244,16 +244,16 @@ async def me(user_id: int = Depends(get_current_user_id)) -> dict:
     return {"authenticated": True}
 
 
-@app.post("/clean")
-async def clean(body: CleanBody, user_id: int = Depends(get_current_user_id)) -> dict:
+@app.post("/resolve")
+async def resolve(body: ResolveBody, user_id: int = Depends(get_current_user_id)) -> dict:
     """Replace patent citations in `body.text` with canonical DOCDB IDs.
 
     Requires a valid session cookie. Enforces the rolling 24h per-account
     quota before making any LLM call.
 
     Args:
-        body: Request body containing the text to clean (already
-            length-checked by `CleanBody.check_length`).
+        body: Request body containing the text to resolve (already
+            length-checked by `ResolveBody.check_length`).
         user_id: The authenticated user, injected by `get_current_user_id`.
 
     Returns:
@@ -277,8 +277,8 @@ async def clean(body: CleanBody, user_id: int = Depends(get_current_user_id)) ->
         raise HTTPException(status_code=429, detail="daily quota exceeded")
     t_quota = time.monotonic()
 
-    result_text = await clean_text(body.text)
-    t_clean = time.monotonic()
+    result_text = await resolve_text(body.text)
+    t_resolve = time.monotonic()
 
     def _log() -> None:
         conn = db.connect(WEB_DB_PATH)
@@ -290,11 +290,11 @@ async def clean(body: CleanBody, user_id: int = Depends(get_current_user_id)) ->
     await anyio.to_thread.run_sync(_log)
     t_end = time.monotonic()
     logger.info(
-        "/clean total=%.0fms quota_check=%.0fms clean_text=%.0fms log=%.0fms",
+        "/resolve total=%.0fms quota_check=%.0fms resolve_text=%.0fms log=%.0fms",
         (t_end - t_start) * 1000,
         (t_quota - t_start) * 1000,
-        (t_clean - t_quota) * 1000,
-        (t_end - t_clean) * 1000,
+        (t_resolve - t_quota) * 1000,
+        (t_end - t_resolve) * 1000,
     )
 
     return {"text": result_text}
@@ -303,7 +303,7 @@ async def clean(body: CleanBody, user_id: int = Depends(get_current_user_id)) ->
 def main() -> None:
     """Run the FastAPI server with uvicorn."""
     import uvicorn
-    # Without this, INFO-level records (including the /clean and mcp_agent
+    # Without this, INFO-level records (including the /resolve and mcp_agent
     # timing breakdowns above) never reach the logs: uvicorn's own logging
     # setup only configures its own loggers, so this process's root logger
     # stays at the Python default (WARNING, no handler) and silently drops
